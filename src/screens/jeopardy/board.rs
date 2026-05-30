@@ -1,4 +1,4 @@
-use egui::{Color32, FontId, RichText, Vec2};
+use egui::{Color32, FontId, Margin, RichText, Vec2};
 use crate::api::jeopardy::Clue;
 use crate::game::scoring::jeopardy_value;
 use crate::theme;
@@ -54,44 +54,76 @@ impl Board {
         });
 
         let n_cols = self.categories.len();
+        let spacing_x = 4.0;
+        let col_w = ((ui.available_width() - spacing_x * (n_cols as f32 - 1.0))
+            / n_cols as f32)
+            .floor()
+            .max(100.0);
+        let btn_h = 60.0;
+        // Fixed header height — large enough for 2-line wrapped category names.
+        let header_h = 72.0;
+        let pad_h = 8.0;
+        let inner_w = col_w - pad_h * 2.0;
+
         egui::Grid::new("jeopardy_board")
             .num_columns(n_cols)
-            .spacing(Vec2::new(4.0, 4.0))
+            .min_col_width(col_w)
+            .max_col_width(col_w)
+            .spacing(Vec2::new(spacing_x, 4.0))
             .show(ui, |ui| {
-                // Category headers
+                // Category headers: uniform col_w × header_h, text wrapped + centered.
                 for (cat, _) in &self.categories {
                     let label = cat.to_uppercase();
-                    ui.vertical_centered(|ui| {
-                        ui.set_min_size(Vec2::new(120.0, 60.0));
-                        ui.painter().rect_filled(
-                            ui.available_rect_before_wrap(),
-                            6.0,
-                            theme::BLUE_DARK,
+                    let (rect, _) = ui.allocate_exact_size(
+                        Vec2::new(col_w, header_h),
+                        egui::Sense::hover(),
+                    );
+                    if ui.is_rect_visible(rect) {
+                        ui.painter().rect_filled(rect, 6.0, theme::BLUE_DARK);
+
+                        // Layout wrapped, horizontally-centered text.
+                        let mut job = egui::text::LayoutJob::default();
+                        job.halign = egui::Align::Center;
+                        job.wrap.max_width = inner_w;
+                        job.append(
+                            &label,
+                            0.0,
+                            egui::text::TextFormat {
+                                font_id: FontId::proportional(13.0),
+                                color: theme::WHITE,
+                                ..Default::default()
+                            },
                         );
-                        ui.label(
-                            RichText::new(&label)
-                                .font(FontId::proportional(13.0))
-                                .color(theme::WHITE)
-                                .strong(),
+                        let galley = ui.fonts(|f| f.layout_job(job));
+                        let text_h = galley.size().y;
+                        // halign=Center means pos.x is the horizontal midpoint of the text.
+                        let pos = egui::pos2(
+                            rect.center().x,
+                            rect.top() + (header_h - text_h) / 2.0,
                         );
-                    });
+                        ui.painter().galley(pos, galley, theme::WHITE);
+                    }
                 }
                 ui.end_row();
 
-                // Value rows
+                // Value rows: every cell is exactly col_w × btn_h.
                 for row in 0..5 {
                     for col in 0..n_cols {
                         let value = jeopardy_value(row, self.is_double_jeopardy);
                         let used = self.used[col][row];
                         if used {
-                            ui.add_space(120.0);
+                            let (rect, _) = ui.allocate_exact_size(
+                                Vec2::new(col_w, btn_h),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().rect_filled(rect, 6.0, theme::BLUE_BG);
                         } else {
                             let btn = egui::Button::new(
                                 RichText::new(format!("${}", value))
                                     .font(theme::dollar_font())
                                     .color(theme::GOLD),
                             )
-                            .min_size(Vec2::new(120.0, 60.0))
+                            .min_size(Vec2::new(col_w, btn_h))
                             .fill(theme::BLUE_DARK);
 
                             if ui.add(btn).clicked() {

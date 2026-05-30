@@ -83,20 +83,28 @@ impl JeopardyStore {
             return None;
         }
 
-        // Pseudo-random selection using system time as seed
-        let seed = std::time::SystemTime::now()
+        // Fisher-Yates shuffle with a simple LCG so categories are drawn
+        // from across the whole dataset rather than alphabetically adjacent.
+        let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() as usize;
-        categories.sort();
-        let start = seed % categories.len();
-        let selected: Vec<String> = categories
-            .into_iter()
-            .cycle()
-            .skip(start)
-            .take(6)
-            .cloned()
-            .collect();
+            .unwrap_or_default();
+        let mut rng = now
+            .as_secs()
+            .wrapping_mul(1_000_000_007)
+            .wrapping_add(now.subsec_nanos() as u64);
+        let lcg = |s: &mut u64| -> usize {
+            *s = s.wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (*s >> 33) as usize
+        };
+
+        categories.sort(); // deterministic base order before shuffling
+        let n = categories.len();
+        for i in (1..n).rev() {
+            let j = lcg(&mut rng) % (i + 1);
+            categories.swap(i, j);
+        }
+        let selected: Vec<String> = categories.into_iter().take(6).cloned().collect();
 
         let mut board = Vec::new();
         for cat in selected {
