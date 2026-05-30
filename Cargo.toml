@@ -1,0 +1,29 @@
+[package]
+name = "infinite_trivia"
+version = "0.1.0"
+edition = "2024"
+description = "Cross-platform trivia game: Jeopardy, General Trivia, and Quizbowl modes"
+authors = []
+
+[[bin]]
+name = "infinite_trivia"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.29"
+egui = "0.29"
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+html-escape = "0.2"
+percent-encoding = "2"
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winres = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
