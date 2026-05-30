@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Screen {
     Home,
+    JeopardySetup,
     Jeopardy,
     Trivia,
     Quizbowl,

@@ -39,10 +39,10 @@ struct ApiQuestion {
     incorrect_answers: Vec<String>,
 }
 
-pub async fn fetch_questions(amount: u8) -> Result<Vec<TriviaQuestion>, String> {
+pub async fn fetch_questions(amount: u8, difficulty: &str) -> Result<Vec<TriviaQuestion>, String> {
     let url = format!(
-        "https://opentdb.com/api.php?amount={}&type=multiple&encode=url3986",
-        amount
+        "https://opentdb.com/api.php?amount={}&type=multiple&encode=url3986&difficulty={}",
+        amount, difficulty
     );
     let resp = reqwest::get(&url)
         .await

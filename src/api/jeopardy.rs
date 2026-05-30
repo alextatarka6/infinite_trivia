@@ -48,7 +48,7 @@ fn parse_value(s: Option<&str>) -> i32 {
     }
 }
 
-/// Indexed in-memory store: (round, category) → records.
+/// Indexed in-memory store: (round, category) -> records.
 pub struct JeopardyStore {
     index: HashMap<(String, String), Vec<JeopardyRecord>>,
 }
@@ -70,7 +70,7 @@ impl JeopardyStore {
         Ok(Self { index })
     }
 
-    /// Returns 6 random categories × 5 clues for `round`, sorted by value.
+    /// Returns 6 random categories x 5 clues for `round`, sorted by value.
     pub fn random_board(&self, round: &str) -> Option<Vec<(String, Vec<Clue>)>> {
         let mut categories: Vec<&String> = self
             .index

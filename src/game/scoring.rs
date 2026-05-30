@@ -12,16 +12,6 @@ pub fn trivia_score(correct: bool, streak: u32) -> i32 {
     }
 }
 
-pub fn quizbowl_score(correct: bool, words_revealed: usize, total_words: usize) -> i32 {
-    if !correct {
-        return -5;
-    }
-    let ratio = words_revealed as f32 / total_words.max(1) as f32;
-    if ratio < 0.33 {
-        20
-    } else if ratio < 0.66 {
-        15
-    } else {
-        10
-    }
+pub fn quizbowl_score(correct: bool, chars_revealed: usize, total_chars: usize) -> i32 {
+    if correct { 10 } else if chars_revealed < total_chars { -5 } else { 0 }
 }

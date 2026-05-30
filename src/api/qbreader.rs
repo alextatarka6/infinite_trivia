@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tossup {
     pub question: String,
-    pub answer: String,
+    pub answer: String,          // clean display string (no brackets)
+    pub accepted_answers: Vec<String>, // main + all [accept ...] alternatives
     pub category: String,
     pub difficulty: String,
 }
@@ -27,8 +28,34 @@ struct ApiTossup {
     difficulty: serde_json::Value, // number or string depending on the entry
 }
 
-pub async fn fetch_tossup() -> Result<Tossup, String> {
-    let resp = reqwest::get("https://www.qbreader.org/api/random-tossup")
+pub async fn fetch_tossup(level: u8, exclude_categories: Vec<String>) -> Result<Tossup, String> {
+    for _ in 0..6 {
+        let t = fetch_one(level).await?;
+        let already_seen = exclude_categories
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case(&t.category));
+        if !already_seen {
+            return Ok(t);
+        }
+    }
+    // Exhausted retries - return whatever we get
+    fetch_one(level).await
+}
+
+async fn fetch_one(level: u8) -> Result<Tossup, String> {
+    // qbreader difficulty 1-10: 1-4 = easy HS/MS, 5-7 = mid HS, 8-10 = hard HS/college
+    let difficulties: &[u8] = match level {
+        1 => &[1, 2, 3, 4],
+        3 => &[8, 9, 10],
+        _ => &[5, 6, 7],
+    };
+    let params: String = difficulties
+        .iter()
+        .map(|d| format!("difficulties[]={}", d))
+        .collect::<Vec<_>>()
+        .join("&");
+    let url = format!("https://www.qbreader.org/api/random-tossup?{}", params);
+    let resp = reqwest::get(&url)
         .await
         .map_err(|e| e.to_string())?
         .json::<ApiResponse>()
@@ -38,9 +65,11 @@ pub async fn fetch_tossup() -> Result<Tossup, String> {
     let t = resp.tossups.into_iter().next()
         .ok_or_else(|| "Empty tossups array".to_string())?;
 
+    let (answer, accepted_answers) = parse_answer(&t.answer_sanitized);
     Ok(Tossup {
         question: t.question_sanitized,
-        answer: clean_answer(&t.answer_sanitized),
+        answer,
+        accepted_answers,
         category: t.category,
         difficulty: match &t.difficulty {
             serde_json::Value::Number(n) => n.to_string(),
@@ -50,15 +79,52 @@ pub async fn fetch_tossup() -> Result<Tossup, String> {
     })
 }
 
-fn clean_answer(raw: &str) -> String {
-    // Strip [accept X] / [prompt X] annotations
-    let s = raw.split('[').next().unwrap_or(raw);
-    s.trim().to_string()
+// Returns (display_answer, all_accepted) by parsing qbreader bracket annotations.
+// Handles: [accept X; Y], [also accept X], [or X] - ignores [prompt ...].
+fn parse_answer(raw: &str) -> (String, Vec<String>) {
+    let display = raw.split('[').next().unwrap_or(raw).trim().to_string();
+    let mut accepted = vec![display.clone()];
+
+    let mut rest = raw;
+    while let Some(open) = rest.find('[') {
+        rest = &rest[open + 1..];
+        let close = rest.find(']').unwrap_or(rest.len());
+        let block = &rest[..close];
+        rest = if close < rest.len() { &rest[close + 1..] } else { "" };
+
+        let lower = block.to_lowercase();
+        let content_start = if let Some(i) = lower.find("also accept") {
+            Some(i + "also accept".len())
+        } else if let Some(i) = lower.find("accept") {
+            Some(i + "accept".len())
+        } else if let Some(i) = lower.find("or ") {
+            Some(i + "or ".len())
+        } else {
+            None
+        };
+
+        if let Some(start) = content_start {
+            let content = block[start..].trim_start_matches(':').trim();
+            for part in content.split(';') {
+                let alt = part.split('[').next().unwrap_or(part).trim();
+                if !alt.is_empty() {
+                    accepted.push(alt.to_string());
+                }
+            }
+        }
+    }
+
+    (display, accepted)
 }
 
-pub fn check_answer(given: &str, expected: &str) -> bool {
+pub fn check_answer(given: &str, accepted: &[String]) -> bool {
     let norm = |s: &str| s.to_lowercase().trim().to_string();
     let g = norm(given);
-    let e = norm(expected);
-    g == e || e.contains(&g) || g.contains(&e)
+    if g.is_empty() {
+        return false;
+    }
+    accepted.iter().any(|a| {
+        let e = norm(a);
+        g == e || e.contains(&g) || g.contains(&e)
+    })
 }
