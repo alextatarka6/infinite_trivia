@@ -4,6 +4,7 @@ use egui::Context;
 use crate::api::{jeopardy::JeopardyStore, opentdb, qbreader};
 use crate::game::state::Screen;
 use crate::screens::{
+    dev::DevMenu,
     home::HomeScreen,
     jeopardy::{
         board::{Board, BoardAction},
@@ -13,7 +14,7 @@ use crate::screens::{
         setup::{JeopardyConfig, JeopardyMode, JeopardySetupScreen, SetupAction},
     },
     trivia::question::TriviaScreen,
-    quizbowl::tossup::TossupScreen,
+    quizbowl::{bonus::BonusScreen, tossup::TossupScreen},
 };
 use crate::theme;
 
@@ -28,6 +29,7 @@ enum JeopardyOverlay {
 pub struct App {
     screen: Screen,
     home_screen: HomeScreen,
+    dev_menu: DevMenu,
     jeopardy_store: Option<JeopardyStore>,
     jeopardy_store_error: Option<String>,
     jeopardy_setup: Option<JeopardySetupScreen>,
@@ -35,24 +37,80 @@ pub struct App {
     jeopardy_overlay: Option<JeopardyOverlay>,
     daily_doubles: Vec<(usize, usize)>,
     trivia: Option<TriviaScreen>,
+    trivia_level: u8,
     quizbowl: Option<TossupScreen>,
+    quizbowl_bonus: Option<BonusScreen>,
     quizbowl_level: u8,
     recent_qb_categories: VecDeque<String>,
     rt: tokio::runtime::Runtime,
     pending_trivia: Arc<Mutex<Option<Result<Vec<crate::api::opentdb::TriviaQuestion>, String>>>>,
     pending_qb: Arc<Mutex<Option<Result<crate::api::qbreader::Tossup, String>>>>,
+    pending_bonus: Arc<Mutex<Option<Result<crate::api::qbreader::Bonus, String>>>>,
 }
 
 impl App {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Load custom typefaces
+        {
+            let mut fonts = egui::FontDefinitions::default();
+
+            // Helper to register a font file into fonts.font_data
+            let load = |fonts: &mut egui::FontDefinitions, key: &str, path: &str| {
+                if let Ok(bytes) = std::fs::read(path) {
+                    fonts.font_data.insert(key.to_owned(), egui::FontData::from_owned(bytes));
+                }
+            };
+
+            load(&mut fonts, "spectral-400",        "assets/spectral-400.ttf");
+            load(&mut fonts, "spectral-500",        "assets/spectral-500.ttf");
+            load(&mut fonts, "spectral-600",        "assets/spectral-600.ttf");
+            load(&mut fonts, "spectral-700",        "assets/spectral-700.ttf");
+            load(&mut fonts, "spectral-500italic",  "assets/spectral-500italic.ttf");
+            load(&mut fonts, "plexsans-400",        "assets/ibmplexsans-400.ttf");
+            load(&mut fonts, "plexsans-500",        "assets/ibmplexsans-500.ttf");
+            load(&mut fonts, "plexsans-600",        "assets/ibmplexsans-600.ttf");
+            load(&mut fonts, "plexmono-400",        "assets/ibmplexmono-400.ttf");
+            load(&mut fonts, "plexmono-500",        "assets/ibmplexmono-500.ttf");
+            load(&mut fonts, "plexmono-600",        "assets/ibmplexmono-600.ttf");
+
+            // IBM Plex Sans replaces the default proportional family
+            fonts.families.entry(egui::FontFamily::Proportional).or_default()
+                .splice(0..0, ["plexsans-400".to_owned()]);
+
+            // IBM Plex Mono replaces the default monospace family
+            fonts.families.entry(egui::FontFamily::Monospace).or_default()
+                .splice(0..0, ["plexmono-400".to_owned()]);
+
+            // Named families for weight/style variants
+            let named = &mut fonts.families;
+            named.insert(egui::FontFamily::Name("spectral".into()),         vec!["spectral-700".to_owned()]);
+            named.insert(egui::FontFamily::Name("spectral-medium".into()),  vec!["spectral-500".to_owned()]);
+            named.insert(egui::FontFamily::Name("spectral-regular".into()), vec!["spectral-400".to_owned()]);
+            named.insert(egui::FontFamily::Name("spectral-italic".into()),  vec!["spectral-500italic".to_owned()]);
+            named.insert(egui::FontFamily::Name("plex-medium".into()),      vec!["plexsans-500".to_owned()]);
+            named.insert(egui::FontFamily::Name("plex-semibold".into()),    vec!["plexsans-600".to_owned()]);
+            named.insert(egui::FontFamily::Name("mono-medium".into()),      vec!["plexmono-500".to_owned()]);
+            named.insert(egui::FontFamily::Name("mono-semibold".into()),    vec!["plexmono-600".to_owned()]);
+
+            // Keep old "serif" alias so existing call-sites don't break
+            named.insert(egui::FontFamily::Name("serif".into()), vec!["spectral-700".to_owned()]);
+
+            cc.egui_ctx.set_fonts(fonts);
+        }
+
         let (jeopardy_store, jeopardy_store_error) = match JeopardyStore::load(JSON_PATH) {
             Ok(store) => (Some(store), None),
             Err(e) => (None, Some(e)),
         };
 
         Self {
-            screen: Screen::Home,
+            screen: if std::env::var("IT_DEV").is_ok() {
+                Screen::DevMenu
+            } else {
+                Screen::Home
+            },
             home_screen: HomeScreen::default(),
+            dev_menu: DevMenu::default(),
             jeopardy_store,
             jeopardy_store_error,
             jeopardy_setup: None,
@@ -60,12 +118,15 @@ impl App {
             jeopardy_overlay: None,
             daily_doubles: vec![],
             trivia: None,
+            trivia_level: 2,
             quizbowl: None,
+            quizbowl_bonus: None,
             quizbowl_level: 2,
             recent_qb_categories: VecDeque::new(),
             rt: tokio::runtime::Runtime::new().expect("tokio runtime"),
             pending_trivia: Arc::new(Mutex::new(None)),
             pending_qb: Arc::new(Mutex::new(None)),
+            pending_bonus: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -119,6 +180,7 @@ impl App {
     }
 
     fn start_trivia(&mut self, ctx: Context, level: u8) {
+        self.trivia_level = level;
         self.trivia = Some(TriviaScreen::loading());
         let pending = Arc::clone(&self.pending_trivia);
         let diff = match level {
@@ -149,6 +211,31 @@ impl App {
             *pending.lock().unwrap() = Some(result);
             ctx.request_repaint();
         });
+    }
+
+    fn start_bonus(&mut self, ctx: Context, score: i32, done: u32) {
+        self.quizbowl_bonus = Some(BonusScreen::loading(score, done));
+        let pending = Arc::clone(&self.pending_bonus);
+        let level = self.quizbowl_level;
+        self.rt.spawn(async move {
+            let result = qbreader::fetch_bonus(level).await;
+            *pending.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Record the just-played tossup category (for variety) and load the next one.
+    fn next_tossup(&mut self, ctx: Context) {
+        if let Some(ref qb) = self.quizbowl {
+            let cat = qb.tossup.category.clone();
+            if !cat.is_empty() {
+                self.recent_qb_categories.push_back(cat);
+                if self.recent_qb_categories.len() > 4 {
+                    self.recent_qb_categories.pop_front();
+                }
+            }
+        }
+        self.start_quizbowl(ctx);
     }
 }
 
@@ -186,6 +273,25 @@ impl eframe::App for App {
             }
         }
 
+        // Poll async bonus result
+        if let Ok(mut guard) = self.pending_bonus.try_lock() {
+            if let Some(result) = guard.take() {
+                if let Some((score, done)) =
+                    self.quizbowl_bonus.as_ref().map(|b| (b.score, b.questions_done))
+                {
+                    self.quizbowl_bonus = Some(match result {
+                        Ok(b) => BonusScreen::new(b, score, done),
+                        Err(e) => {
+                            let mut s = BonusScreen::loading(score, done);
+                            s.loading = false;
+                            s.error = Some(e);
+                            s
+                        }
+                    });
+                }
+            }
+        }
+
         let dt = ctx.input(|i| i.stable_dt);
 
         egui::CentralPanel::default()
@@ -202,10 +308,11 @@ impl eframe::App for App {
                             Screen::Quizbowl => {
                                 self.quizbowl_level = level;
                                 self.quizbowl = None;
+                                self.quizbowl_bonus = None;
                                 self.recent_qb_categories.clear();
                                 self.start_quizbowl(ctx.clone());
                             }
-                            Screen::Jeopardy | Screen::Home => {}
+                            Screen::Jeopardy | Screen::Home | Screen::DevMenu => {}
                         }
                     }
                 }
@@ -237,11 +344,10 @@ impl eframe::App for App {
                         if let Some(action) = trivia.show(ui, dt) {
                             match action {
                                 TriviaAction::Quit => self.screen = Screen::Home,
-                                TriviaAction::Next { .. } => {
-                                    if trivia.current_idx >= trivia.questions.len() {
-                                        self.screen = Screen::Home;
-                                    }
+                                TriviaAction::Restart => {
+                                    self.start_trivia(ctx.clone(), self.trivia_level);
                                 }
+                                TriviaAction::Next { .. } => {}
                             }
                         }
                     }
@@ -249,6 +355,12 @@ impl eframe::App for App {
 
                 Screen::Quizbowl => {
                     self.update_quizbowl(ui, ctx);
+                }
+
+                Screen::DevMenu => {
+                    if self.dev_menu.show(ui, dt) {
+                        self.screen = Screen::Home;
+                    }
                 }
             });
 
@@ -398,21 +510,42 @@ impl App {
     }
 
     fn update_quizbowl(&mut self, ui: &mut egui::Ui, ctx: &Context) {
+        use crate::screens::quizbowl::bonus::BonusAction;
         use crate::screens::quizbowl::tossup::TossupAction;
         let dt = ctx.input(|i| i.stable_dt);
+
+        // A bonus round, if active, replaces the tossup view.
+        if self.quizbowl_bonus.is_some() {
+            let action = self.quizbowl_bonus.as_mut().and_then(|b| b.show(ui));
+            match action {
+                Some(BonusAction::Done { score }) => {
+                    // Carry the post-bonus score into the tossup loop, then continue.
+                    if let Some(qb) = self.quizbowl.as_mut() {
+                        qb.score = score;
+                    }
+                    self.quizbowl_bonus = None;
+                    self.next_tossup(ctx.clone());
+                }
+                Some(BonusAction::Quit) => {
+                    self.screen = Screen::Home;
+                    self.quizbowl = None;
+                    self.quizbowl_bonus = None;
+                }
+                None => {}
+            }
+            return;
+        }
+
         let action = self.quizbowl.as_mut().and_then(|qb| qb.show(ui, dt));
         match action {
-            Some(TossupAction::Next) => {
-                if let Some(ref qb) = self.quizbowl {
-                    let cat = qb.tossup.category.clone();
-                    if !cat.is_empty() {
-                        self.recent_qb_categories.push_back(cat);
-                        if self.recent_qb_categories.len() > 4 {
-                            self.recent_qb_categories.pop_front();
-                        }
-                    }
-                }
-                self.start_quizbowl(ctx.clone());
+            Some(TossupAction::Next) => self.next_tossup(ctx.clone()),
+            Some(TossupAction::Bonus) => {
+                let (score, done) = self
+                    .quizbowl
+                    .as_ref()
+                    .map(|q| (q.score, q.questions_done))
+                    .unwrap_or((0, 0));
+                self.start_bonus(ctx.clone(), score, done);
             }
             Some(TossupAction::Quit) => {
                 self.screen = Screen::Home;

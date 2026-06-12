@@ -1,7 +1,11 @@
-use egui::{Align2, FontId, Pos2, Rect, RichText, Rounding, Sense, Stroke, Vec2};
+use egui::{Align2, Color32, Id, Pos2, Rect, Rounding, Sense, Stroke, Vec2};
 use crate::api::jeopardy::Clue;
 use crate::game::scoring::jeopardy_value;
-use crate::theme::{self, BLUE_BG, BLUE_DARK, BLUE_MID, GOLD, INK_DIM, LINE, WHITE};
+use crate::screens::kit;
+use crate::theme::{
+    self, ACCENT_SOFT, BLUE_BG, BLUE_DARK, BLUE_MID, GOLD, GOLD_HOVER, INK_DIM, LINE, ON_ACCENT,
+    TILE_BOTTOM, WHITE,
+};
 
 pub enum BoardAction {
     SelectClue { col: usize, row: usize },
@@ -15,6 +19,21 @@ pub struct Board {
     pub is_double_jeopardy: bool,
     pub players: Vec<(String, i32)>,
     pub active: usize,
+    enter_start: f64,
+}
+
+/// `$1,200` / `-$400`
+pub fn money(n: i32) -> String {
+    let mag = n.unsigned_abs();
+    let digits: Vec<char> = mag.to_string().chars().collect();
+    let mut out = String::new();
+    for (i, c) in digits.iter().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*c);
+    }
+    if n < 0 { format!("-${out}") } else { format!("${out}") }
 }
 
 impl Board {
@@ -29,6 +48,7 @@ impl Board {
             is_double_jeopardy,
             players,
             active: 0,
+            enter_start: -1.0,
         }
     }
 
@@ -46,268 +66,240 @@ impl Board {
         self.used.iter().all(|col| col.iter().all(|&u| u))
     }
 
-    fn draw_score_chip(painter: &egui::Painter, right_x: f32, center_y: f32, score: i32) {
-        let label = "SCORE";
-        let value = if score < 0 {
-            format!("-${}", score.unsigned_abs().to_string()
-                .chars().rev().collect::<Vec<_>>()
-                .chunks(3).map(|c| c.iter().collect::<String>())
-                .collect::<Vec<_>>().join(",")
-                .chars().rev().collect::<String>())
-        } else {
-            format!("${}", score)
-        };
-        let chip_w = 130.0_f32;
-        let chip_h = 28.0_f32;
-        let chip_rect = Rect::from_center_size(
-            Pos2::new(right_x - chip_w / 2.0 - 8.0, center_y),
-            Vec2::new(chip_w, chip_h),
-        );
-        painter.rect_filled(chip_rect, Rounding::same(999.0), BLUE_MID);
-        painter.rect_stroke(chip_rect, Rounding::same(999.0), Stroke::new(1.0, LINE));
-
-        let mid = chip_rect.center();
-        painter.text(
-            Pos2::new(mid.x - 4.0, mid.y),
-            Align2::RIGHT_CENTER,
-            label,
-            theme::mono_font(10.0),
-            INK_DIM,
-        );
-        painter.text(
-            Pos2::new(mid.x, mid.y),
-            Align2::LEFT_CENTER,
-            format!("  {}", value),
-            FontId::proportional(13.0),
-            WHITE,
-        );
+    /// Pixel width of a `.it-team` chip for the given name + score.
+    fn chip_width(painter: &egui::Painter, name: &str, score: i32) -> f32 {
+        let name_w = painter.layout_no_wrap(name.into(), theme::mono(9.5), WHITE).size().x;
+        let score_w = painter.layout_no_wrap(money(score), theme::mono(14.0), WHITE).size().x;
+        7.0 + 20.0 + 9.0 + name_w + 9.0 + score_w + 13.0
     }
 
-    fn draw_player_chips(
+    /// One `.it-team` chip, drawn with its left edge at `left`.
+    fn team_chip(
         painter: &egui::Painter,
-        players: &[(String, i32)],
-        active: usize,
-        center_y: f32,
-        avail_w: f32,
+        ui: &egui::Ui,
+        left: f32,
+        cy: f32,
+        idx: usize,
+        name: &str,
+        score: i32,
+        active: bool,
     ) {
-        let chip_w = 110.0_f32;
-        let chip_h = 26.0_f32;
-        let chip_gap = 8.0_f32;
-        let n = players.len() as f32;
-        let total_w = n * chip_w + (n - 1.0) * chip_gap;
-        let start_x = (avail_w - total_w) / 2.0;
+        let no = (idx + 1).to_string();
+        let score_s = money(score);
+        let name_font = theme::mono(9.5);
+        let score_font = theme::mono(14.0);
+        let circle_d = 20.0;
+        let gap = 9.0;
+        let pad_l = 7.0;
+        let pad_r = 13.0;
+        let w = Self::chip_width(painter, name, score);
+        let h = 34.0;
+        let rect = Rect::from_min_size(Pos2::new(left, cy - h / 2.0), Vec2::new(w, h));
 
-        for (i, (name, score)) in players.iter().enumerate() {
-            let is_active = i == active;
-            let x = start_x + i as f32 * (chip_w + chip_gap);
-            let chip_rect = Rect::from_min_size(
-                Pos2::new(x, center_y - chip_h / 2.0),
-                Vec2::new(chip_w, chip_h),
-            );
-            painter.rect_filled(chip_rect, Rounding::same(999.0), BLUE_MID);
-            let border_color = if is_active { GOLD } else { LINE };
-            let border_w = if is_active { 2.0 } else { 1.0 };
-            painter.rect_stroke(chip_rect, Rounding::same(999.0), Stroke::new(border_w, border_color));
-
-            let mid = chip_rect.center();
-            let name_color = if is_active { GOLD } else { INK_DIM };
-            let display_name: String = name.chars().take(8).collect();
-            painter.text(
-                Pos2::new(mid.x - 4.0, mid.y),
-                Align2::RIGHT_CENTER,
-                display_name,
-                theme::mono_font(9.0),
-                name_color,
-            );
-            let score_str = if *score < 0 {
-                format!(" -${}", score.unsigned_abs())
-            } else {
-                format!(" ${}", score)
-            };
-            painter.text(
-                Pos2::new(mid.x - 4.0, mid.y),
-                Align2::LEFT_CENTER,
-                score_str,
-                FontId::proportional(12.0),
-                WHITE,
-            );
+        let lift = if active { -2.0 } else { 0.0 };
+        let r = rect.translate(Vec2::new(0.0, lift));
+        let fill = if active {
+            kit::lerp_color(BLUE_MID, GOLD, 0.10)
+        } else {
+            BLUE_MID
+        };
+        painter.rect_filled(r, Rounding::same(999.0), fill);
+        painter.rect_stroke(
+            r,
+            Rounding::same(999.0),
+            Stroke::new(1.0, if active { GOLD } else { LINE }),
+        );
+        if active {
+            painter.rect_stroke(r, Rounding::same(999.0), Stroke::new(1.0, ACCENT_SOFT));
         }
+
+        // number circle
+        let cc = Pos2::new(r.left() + pad_l + circle_d / 2.0, r.center().y);
+        painter.circle_filled(cc, circle_d / 2.0, if active { GOLD } else { BLUE_BG });
+        if !active {
+            painter.circle_stroke(cc, circle_d / 2.0, Stroke::new(1.0, LINE));
+        }
+        painter.text(
+            cc,
+            Align2::CENTER_CENTER,
+            no,
+            theme::mono(10.0),
+            if active { ON_ACCENT } else { INK_DIM },
+        );
+        // name
+        let nx = cc.x + circle_d / 2.0 + gap;
+        painter.text(
+            Pos2::new(nx, r.center().y),
+            Align2::LEFT_CENTER,
+            name,
+            name_font,
+            if active { GOLD } else { INK_DIM },
+        );
+        // score
+        painter.text(
+            Pos2::new(r.right() - pad_r, r.center().y),
+            Align2::RIGHT_CENTER,
+            score_s,
+            score_font,
+            WHITE,
+        );
+        let _ = ui;
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<BoardAction> {
+        kit::ambient(ui.ctx());
         let mut action = None;
-
-        let has_teams = self.players.len() > 1;
-        let bar_h = if has_teams { 80.0_f32 } else { 46.0_f32 };
-        let avail_w = ui.available_width();
-        let (bar_rect, _) =
-            ui.allocate_exact_size(Vec2::new(avail_w, bar_h), Sense::hover());
-
-        let round_label = if self.is_double_jeopardy {
-            "DOUBLE JEOPARDY!"
-        } else {
-            "JEOPARDY!"
-        };
-        let label_y = if has_teams { bar_rect.top() + 22.0 } else { bar_rect.center().y };
-        ui.painter().text(
-            Pos2::new(bar_rect.center().x, label_y),
-            Align2::CENTER_CENTER,
-            round_label,
-            theme::heading_font(),
-            GOLD,
-        );
-
-        if has_teams {
-            Self::draw_player_chips(
-                ui.painter(),
-                &self.players,
-                self.active,
-                bar_rect.top() + 58.0,
-                avail_w,
-            );
-        } else {
-            Self::draw_score_chip(
-                ui.painter(),
-                bar_rect.right(),
-                bar_rect.center().y,
-                self.players[0].1,
-            );
+        if kit::quit_button(ui) {
+            action = Some(BoardAction::Quit);
         }
 
-        ui.add_space(6.0);
+        let now = ui.input(|i| i.time);
+        if self.enter_start < 0.0 {
+            self.enter_start = now;
+        }
+        let ey = kit::enter_offset(ui, self.enter_start);
 
-        // ── Grid ─────────────────────────────────────────────────────────────
-        let n_cols = self.categories.len();
-        let spacing = 5.0_f32;
-        let col_w = ((ui.available_width() - spacing * (n_cols as f32 - 1.0))
-            / n_cols as f32)
-            .floor()
-            .max(80.0);
-        let header_h = 68.0_f32;
-        let tile_h = 62.0_f32;
-        let inner_w = col_w - 12.0;
+        let screen = ui.ctx().screen_rect();
+        let avail_w = ui.available_width();
+        let painter = ui.painter().clone();
+        let has_teams = self.players.len() > 1;
 
-        egui::Grid::new("jeopardy_board")
-            .num_columns(n_cols)
-            .min_col_width(col_w)
-            .max_col_width(col_w)
-            .spacing(Vec2::new(spacing, spacing))
-            .show(ui, |ui| {
-                // Category headers
-                for (cat, _) in &self.categories {
-                    let label = cat.to_uppercase();
-                    let (rect, _) =
-                        ui.allocate_exact_size(Vec2::new(col_w, header_h), Sense::hover());
-                    if ui.is_rect_visible(rect) {
-                        ui.painter().rect_filled(rect, Rounding::same(8.0), BLUE_MID);
-                        ui.painter().rect_stroke(
-                            rect,
-                            Rounding::same(8.0),
-                            Stroke::new(1.0, LINE),
-                        );
-                        let mut job = egui::text::LayoutJob::default();
-                        job.halign = egui::Align::Center;
-                        job.wrap.max_width = inner_w;
-                        job.append(
-                            &label,
-                            0.0,
-                            egui::text::TextFormat {
-                                font_id: FontId::proportional(11.5),
-                                color: WHITE,
-                                ..Default::default()
-                            },
-                        );
-                        let galley = ui.fonts(|f| f.layout_job(job));
-                        let text_h = galley.size().y;
-                        let pos =
-                            Pos2::new(rect.center().x, rect.top() + (header_h - text_h) / 2.0);
-                        ui.painter().galley(pos, galley, WHITE);
-                    }
+        // -- Round title (.it-round) ------------------------------------------
+        let mut y = 24.0 + ey;
+        let title = if self.is_double_jeopardy { "DOUBLE JEOPARDY!" } else { "JEOPARDY!" };
+        painter.text(
+            Pos2::new(avail_w / 2.0, y + 18.0),
+            Align2::CENTER_CENTER,
+            title,
+            theme::spectral(30.0),
+            GOLD,
+        );
+        y += 44.0;
+
+        // -- Scoreboard (.it-teams) -------------------------------------------
+        let chip_gap = 9.0;
+        let names: Vec<String> = self.players.iter().map(|(n, _)| n.chars().take(10).collect()).collect();
+        let widths: Vec<f32> = self
+            .players
+            .iter()
+            .zip(&names)
+            .map(|((_, s), n)| Self::chip_width(&painter, n, *s))
+            .collect();
+        let total_w: f32 = widths.iter().sum::<f32>() + chip_gap * (widths.len() as f32 - 1.0);
+        let mut cx = (avail_w - total_w) / 2.0;
+        for (i, ((_, score), name)) in self.players.iter().zip(&names).enumerate() {
+            Self::team_chip(&painter, ui, cx, y + 17.0, i, name, *score, i == self.active);
+            cx += widths[i] + chip_gap;
+        }
+        y += 34.0 + 10.0;
+
+        // turn line (.it-turn)
+        if has_teams {
+            painter.text(
+                Pos2::new(avail_w / 2.0, y),
+                Align2::CENTER_CENTER,
+                format!("{} has the board", self.players[self.active].0),
+                theme::mono(11.0),
+                INK_DIM,
+            );
+            y += 22.0;
+        }
+
+        // -- Board grid (manual, flexes to fill) ------------------------------
+        let n_cols = self.categories.len().max(1);
+        let side_pad = 30.0;
+        let gap = 7.0;
+        let grid_left = side_pad;
+        let grid_w = avail_w - side_pad * 2.0;
+        let col_w = (grid_w - gap * (n_cols as f32 - 1.0)) / n_cols as f32;
+        let header_h = 64.0;
+
+        let final_btn = self.all_used();
+        let bottom_reserve = if final_btn { 78.0 } else { 28.0 };
+        let grid_top = y + 4.0;
+        let grid_bottom = screen.bottom() - bottom_reserve + ey;
+        let rows = 5usize;
+        let tile_h = (grid_bottom - grid_top - header_h - gap * rows as f32) / rows as f32;
+
+        for col in 0..n_cols {
+            let x = grid_left + col as f32 * (col_w + gap);
+
+            // category header (.it-cat)
+            let hrect = Rect::from_min_size(Pos2::new(x, grid_top), Vec2::new(col_w, header_h));
+            painter.rect_filled(hrect, Rounding::same(10.0), BLUE_MID);
+            painter.rect_stroke(hrect, Rounding::same(10.0), Stroke::new(1.0, LINE));
+            let cat = self.categories[col].0.to_uppercase();
+            let galley = painter.layout(cat, theme::plex_semibold(11.0), WHITE, col_w - 16.0);
+            painter.galley(
+                Pos2::new(hrect.center().x - galley.size().x / 2.0, hrect.center().y - galley.size().y / 2.0),
+                galley,
+                WHITE,
+            );
+
+            // value tiles (.it-tile)
+            for row in 0..rows {
+                let ty = grid_top + header_h + gap + row as f32 * (tile_h + gap);
+                let rect = Rect::from_min_size(Pos2::new(x, ty), Vec2::new(col_w, tile_h));
+                let used = self.used[col][row];
+                let resp = ui.interact(
+                    rect,
+                    Id::new(("jd_tile", col, row)),
+                    if used { Sense::hover() } else { Sense::click() },
+                );
+
+                if used {
+                    painter.rect_stroke(rect, Rounding::same(10.0), Stroke::new(1.0, LINE));
+                    continue;
                 }
-                ui.end_row();
 
-                // Value rows
-                for row in 0..5 {
-                    for col in 0..n_cols {
-                        let value = jeopardy_value(row, self.is_double_jeopardy);
-                        let used = self.used[col][row];
-
-                        let (rect, resp) = ui.allocate_exact_size(
-                            Vec2::new(col_w, tile_h),
-                            if used { Sense::hover() } else { Sense::click() },
-                        );
-                        if ui.is_rect_visible(rect) {
-                            if used {
-                                ui.painter().rect_stroke(
-                                    rect,
-                                    Rounding::same(8.0),
-                                    Stroke::new(1.0, LINE),
-                                );
-                            } else {
-                                let fill = if resp.hovered() {
-                                    egui::Color32::from_rgb(34, 60, 170)
-                                } else {
-                                    BLUE_DARK
-                                };
-                                ui.painter().rect_filled(rect, Rounding::same(8.0), fill);
-                                let top_line = Rect::from_min_size(
-                                    rect.min + Vec2::new(8.0, 1.0),
-                                    Vec2::new(col_w - 16.0, 1.0),
-                                );
-                                ui.painter().rect_filled(
-                                    top_line,
-                                    Rounding::ZERO,
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 25),
-                                );
-                                ui.painter().text(
-                                    rect.center(),
-                                    Align2::CENTER_CENTER,
-                                    format!("${}", value),
-                                    theme::dollar_font(),
-                                    GOLD,
-                                );
-                                if resp.clicked() {
-                                    action = Some(BoardAction::SelectClue { col, row });
-                                }
-                            }
-                        }
-                    }
-                    ui.end_row();
+                let t = ui.ctx().animate_bool(Id::new(("jd_tile_h", col, row)), resp.hovered());
+                let lift = -4.0 * t;
+                let grow = 1.0 + 0.04 * t;
+                let draw = Rect::from_center_size(
+                    rect.center() + Vec2::new(0.0, lift),
+                    rect.size() * grow,
+                );
+                if t > 0.0 {
+                    painter.rect_filled(
+                        draw.expand(6.0 * t),
+                        Rounding::same(10.0),
+                        ACCENT_SOFT.gamma_multiply(0.5 * t),
+                    );
                 }
-            });
+                // gradient-ish fill: base tile, darker bottom inset
+                painter.rect_filled(draw, Rounding::same(10.0), BLUE_DARK);
+                let bottom = Rect::from_min_max(
+                    Pos2::new(draw.left(), draw.center().y),
+                    draw.max,
+                );
+                painter.rect_filled(bottom, Rounding::same(10.0), TILE_BOTTOM.gamma_multiply(0.5));
+                // inset top highlight
+                painter.rect_filled(
+                    Rect::from_min_size(draw.min + Vec2::new(8.0, 1.0), Vec2::new(draw.width() - 16.0, 1.0)),
+                    Rounding::ZERO,
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 25),
+                );
+                painter.text(
+                    draw.center(),
+                    Align2::CENTER_CENTER,
+                    money(jeopardy_value(row, self.is_double_jeopardy)),
+                    theme::mono_semibold(26.0),
+                    kit::lerp_color(GOLD, GOLD_HOVER, t),
+                );
 
-        ui.add_space(14.0);
-
-        // ── Bottom actions ────────────────────────────────────────────────────
-        ui.horizontal(|ui| {
-            if self.all_used() {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Final Jeopardy >")
-                                .font(theme::subheading_font())
-                                .color(egui::Color32::from_rgb(26, 19, 4)),
-                        )
-                        .fill(GOLD),
-                    )
-                    .clicked()
-                {
-                    action = Some(BoardAction::GoToFinal);
+                if resp.clicked() {
+                    action = Some(BoardAction::SelectClue { col, row });
                 }
             }
-            if ui
-                .add(
-                    egui::Button::new(RichText::new("Quit").color(INK_DIM))
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(Stroke::new(1.0, LINE)),
-                )
-                .clicked()
-            {
-                action = Some(BoardAction::Quit);
-            }
-        });
+        }
 
-        let _ = BLUE_BG;
+        // -- Final Jeopardy button --------------------------------------------
+        if final_btn
+            && kit::centered_primary(ui, avail_w / 2.0, screen.bottom() - 28.0 - 42.0 + ey, "Final Jeopardy →")
+        {
+            action = Some(BoardAction::GoToFinal);
+        }
+
         action
     }
 }
