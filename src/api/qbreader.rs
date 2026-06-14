@@ -15,6 +15,23 @@ impl Tossup {
     }
 }
 
+/// A quizbowl bonus: a leadin read aloud, then (usually three) parts, each with
+/// its own answer. In solo play the controlling player answers every part.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bonus {
+    pub leadin: String,
+    pub parts: Vec<BonusPart>,
+    pub category: String,
+    pub difficulty: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BonusPart {
+    pub text: String,
+    pub answer: String,                // clean display string
+    pub accepted_answers: Vec<String>, // main + [accept ...] alternatives
+}
+
 #[derive(Deserialize)]
 struct ApiResponse {
     tossups: Vec<ApiTossup>,
@@ -42,19 +59,33 @@ pub async fn fetch_tossup(level: u8, exclude_categories: Vec<String>) -> Result<
     fetch_one(level).await
 }
 
-async fn fetch_one(level: u8) -> Result<Tossup, String> {
-    // qbreader difficulty 1-10: 1-4 = easy HS/MS, 5-7 = mid HS, 8-10 = hard HS/college
+/// qbreader difficulty 1-10: 1-4 = easy HS/MS, 5-7 = mid HS, 8-10 = hard HS/college
+fn difficulty_params(level: u8) -> String {
     let difficulties: &[u8] = match level {
         1 => &[1, 2, 3, 4],
         3 => &[8, 9, 10],
         _ => &[5, 6, 7],
     };
-    let params: String = difficulties
+    difficulties
         .iter()
         .map(|d| format!("difficulties[]={}", d))
         .collect::<Vec<_>>()
-        .join("&");
-    let url = format!("https://www.qbreader.org/api/random-tossup?{}", params);
+        .join("&")
+}
+
+fn difficulty_string(d: &serde_json::Value) -> String {
+    match d {
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+async fn fetch_one(level: u8) -> Result<Tossup, String> {
+    let url = format!(
+        "https://www.qbreader.org/api/random-tossup?{}",
+        difficulty_params(level)
+    );
     let resp = reqwest::get(&url)
         .await
         .map_err(|e| e.to_string())?
@@ -71,11 +102,58 @@ async fn fetch_one(level: u8) -> Result<Tossup, String> {
         answer,
         accepted_answers,
         category: t.category,
-        difficulty: match &t.difficulty {
-            serde_json::Value::Number(n) => n.to_string(),
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        },
+        difficulty: difficulty_string(&t.difficulty),
+    })
+}
+
+#[derive(Deserialize)]
+struct BonusResponse {
+    bonuses: Vec<ApiBonus>,
+}
+
+#[derive(Deserialize)]
+struct ApiBonus {
+    leadin_sanitized: String,
+    parts_sanitized: Vec<String>,
+    answers_sanitized: Vec<String>,
+    category: String,
+    difficulty: serde_json::Value,
+}
+
+/// Fetch a random bonus at the given difficulty level.
+pub async fn fetch_bonus(level: u8) -> Result<Bonus, String> {
+    let url = format!(
+        "https://www.qbreader.org/api/random-bonus?{}",
+        difficulty_params(level)
+    );
+    let resp = reqwest::get(&url)
+        .await
+        .map_err(|e| e.to_string())?
+        .json::<BonusResponse>()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let b = resp
+        .bonuses
+        .into_iter()
+        .next()
+        .ok_or_else(|| "Empty bonuses array".to_string())?;
+
+    let parts = b
+        .parts_sanitized
+        .into_iter()
+        .zip(b.answers_sanitized)
+        .map(|(text, raw_answer)| {
+            let (answer, accepted_answers) = parse_answer(&raw_answer);
+            BonusPart { text, answer, accepted_answers }
+        })
+        .collect();
+
+    Ok(Bonus {
+        leadin: b.leadin_sanitized,
+        parts,
+        category: b.category,
+        difficulty: difficulty_string(&b.difficulty),
     })
 }
 

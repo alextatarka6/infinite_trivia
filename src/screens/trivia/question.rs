@@ -1,13 +1,15 @@
-use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Rounding, Sense, Stroke, Vec2};
+use egui::{Align2, Color32, Id, Pos2, Rect, RichText, Rounding, Sense, Stroke, Vec2};
 use crate::api::opentdb::TriviaQuestion;
 use crate::game::scoring::trivia_score;
+use crate::screens::kit::{self, SummaryAction};
 use crate::theme::{
-    self, ACCENT_SOFT, BLUE_MID, CORRECT_BG, GOLD, GOLD_HOVER, GREEN_CORRECT, INK_DIM,
-    LINE, RED_WRONG, WHITE, WRONG_BG,
+    self, BLUE_BG, BLUE_MID, CORRECT_BG, GOLD, GREEN_CORRECT, INK_DIM, LINE, RED_WRONG, WHITE,
+    WRONG_BG,
 };
 
 pub enum TriviaAction {
     Next { score_delta: i32 },
+    Restart,
     Quit,
 }
 
@@ -23,6 +25,11 @@ pub struct TriviaScreen {
     pub timer_max: f32,
     pub loading: bool,
     pub error: Option<String>,
+    // animation bookkeeping
+    anim_idx: i64,
+    enter_start: f64,
+    select_start: f64,
+    bump_start: f64,
 }
 
 impl TriviaScreen {
@@ -39,6 +46,10 @@ impl TriviaScreen {
             timer_max: 20.0,
             loading: false,
             error: None,
+            anim_idx: -1,
+            enter_start: 0.0,
+            select_start: 0.0,
+            bump_start: -10.0,
         }
     }
 
@@ -55,205 +66,174 @@ impl TriviaScreen {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, dt: f32) -> Option<TriviaAction> {
-        let mut action = None;
+        kit::ambient(ui.ctx());
 
         // -- Loading ----------------------------------------------------------
         if self.loading {
-            let avail_h = ui.available_height();
-            ui.add_space((avail_h - 80.0) / 2.0);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    RichText::new("Pulling fresh questions...")
-                        .font(FontId::proportional(20.0))
-                        .color(INK_DIM)
-                        .italics(),
-                );
-            });
+            kit::loader(ui, "Pulling fresh questions…");
             return None;
         }
 
         // -- Error ------------------------------------------------------------
         if let Some(err) = self.error.clone() {
+            let mut action = None;
+            let avail = ui.available_size();
+            ui.add_space((avail.y - 120.0).max(16.0) / 2.0);
             ui.vertical_centered(|ui| {
-                ui.add_space(40.0);
                 ui.label(
                     RichText::new("Could not fetch questions")
-                        .font(theme::subheading_font())
+                        .font(theme::spectral(26.0))
                         .color(RED_WRONG),
                 );
-                ui.label(RichText::new(&err).color(WHITE));
-                ui.add_space(16.0);
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Back to menu")
-                                .color(Color32::from_rgb(26, 19, 4)),
-                        )
-                        .fill(GOLD)
-                        .min_size(Vec2::new(140.0, 36.0)),
-                    )
-                    .clicked()
-                {
+                ui.add_space(8.0);
+                ui.label(RichText::new(&err).font(theme::plex(14.0)).color(INK_DIM));
+                ui.add_space(18.0);
+                if kit::primary_button(ui, "Back to menu").clicked() {
                     action = Some(TriviaAction::Quit);
                 }
             });
             return action;
         }
 
-        // -- Round complete ---------------------------------------------------
+        let now = ui.input(|i| i.time);
+
+        // Reset the enter animation whenever the visible "view" changes.
+        if self.anim_idx != self.current_idx as i64 {
+            self.anim_idx = self.current_idx as i64;
+            self.enter_start = now;
+        }
+
+        // -- Round complete (Summary) -----------------------------------------
         if self.current_idx >= self.questions.len() && !self.questions.is_empty() {
-            let avail = ui.available_size();
-            ui.add_space((avail.y - 320.0).max(16.0) / 2.0);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    RichText::new("ROUND COMPLETE")
-                        .font(theme::mono_font(13.0))
-                        .color(GOLD),
-                );
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(format!("{}", self.score))
-                        .font(FontId::proportional(68.0))
-                        .color(GOLD)
-                        .strong(),
-                );
-                ui.label(
-                    RichText::new("FINAL SCORE")
-                        .font(theme::mono_font(11.0))
-                        .color(INK_DIM),
-                );
-                ui.add_space(28.0);
-                ui.horizontal(|ui| {
-                    for (val, label) in [
-                        (self.correct_count.to_string(), "correct"),
-                        (
-                            (self.questions.len() as u32 - self.correct_count).to_string(),
-                            "misses",
-                        ),
-                        (format!("x{}", self.best_streak), "best streak"),
-                    ] {
-                        ui.vertical_centered(|ui| {
-                            ui.set_min_width(90.0);
-                            ui.label(
-                                RichText::new(&val)
-                                    .font(FontId::proportional(30.0))
-                                    .color(WHITE),
-                            );
-                            ui.label(
-                                RichText::new(label)
-                                    .font(theme::mono_font(10.0))
-                                    .color(INK_DIM),
-                            );
-                        });
-                    }
-                });
-                ui.add_space(30.0);
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Back to menu")
-                                .color(Color32::from_rgb(26, 19, 4))
-                                .font(theme::body_font()),
-                        )
-                        .fill(GOLD)
-                        .min_size(Vec2::new(150.0, 38.0)),
-                    )
-                    .clicked()
-                {
-                    action = Some(TriviaAction::Quit);
-                }
-            });
-            return action;
+            if kit::quit_button(ui) {
+                return Some(TriviaAction::Quit);
+            }
+            let misses = self.questions.len() as u32 - self.correct_count;
+            let stats = [
+                kit::Stat { value: self.correct_count.to_string(), label: "correct" },
+                kit::Stat { value: misses.to_string(), label: "misses" },
+                kit::Stat { value: format!("×{}", self.best_streak), label: "best streak" },
+            ];
+            return match kit::summary(
+                ui,
+                "ROUND COMPLETE",
+                &self.score.to_string(),
+                "FINAL SCORE",
+                &stats,
+                self.enter_start,
+            ) {
+                SummaryAction::Restart => Some(TriviaAction::Restart),
+                SummaryAction::Quit => Some(TriviaAction::Quit),
+                SummaryAction::None => None,
+            };
         }
 
         if self.questions.is_empty() {
-            return action;
+            return None;
         }
 
-        let q = &self.questions[self.current_idx];
-        let answers = q.shuffled_answers();
+        if kit::quit_button(ui) {
+            return Some(TriviaAction::Quit);
+        }
 
-        // Tick timer
+        // Tick the countdown.
         if self.selected.is_none() {
             self.timer -= dt;
             if self.timer <= 0.0 {
                 self.timer = 0.0;
                 self.streak = 0;
                 self.selected = Some(usize::MAX);
+                self.select_start = now;
             }
         }
 
+        let q = &self.questions[self.current_idx];
+        let answers = q.shuffled_answers();
+
+        // -- Geometry: a centered content column, .it-trivia padding 0 44 ------
+        let screen = ui.ctx().screen_rect();
         let avail_w = ui.available_width();
-        let inner_w = (avail_w - 88.0).min(580.0);
-        let left_pad = (avail_w - inner_w) / 2.0;
+        let content_w = (avail_w - 88.0).min(900.0).max(420.0);
+        let left = (avail_w - content_w) / 2.0;
+        let right = left + content_w;
+        let ey = kit::enter_offset(ui, self.enter_start);
+        let painter = ui.painter().clone();
 
-        ui.add_space(16.0);
-
-        // -- Top bar ----------------------------------------------------------
-        let bar_h = 30.0_f32;
-        let (bar_rect, _) =
-            ui.allocate_exact_size(Vec2::new(avail_w, bar_h), Sense::hover());
-
-        ui.painter().text(
-            Pos2::new(left_pad, bar_rect.center().y),
+        // -- Top bar (.it-trivia-bar) -----------------------------------------
+        let mut y = 30.0 + ey;
+        let bar_h = 30.0;
+        painter.text(
+            Pos2::new(left, y + bar_h / 2.0),
             Align2::LEFT_CENTER,
-            format!("Q {}/{} | {}", self.current_idx + 1, self.questions.len(), q.category),
-            theme::mono_font(12.0),
+            format!("Q {}/{}", self.current_idx + 1, self.questions.len()),
+            theme::mono(12.0),
+            INK_DIM,
+        );
+        let qn = ui
+            .painter()
+            .layout_no_wrap(
+                format!("Q {}/{}", self.current_idx + 1, self.questions.len()),
+                theme::mono(12.0),
+                INK_DIM,
+            )
+            .size()
+            .x;
+        painter.text(
+            Pos2::new(left + qn + 8.0, y + bar_h / 2.0),
+            Align2::LEFT_CENTER,
+            "•",
+            theme::mono(12.0),
+            INK_DIM.gamma_multiply(0.5),
+        );
+        painter.text(
+            Pos2::new(left + qn + 22.0, y + bar_h / 2.0),
+            Align2::LEFT_CENTER,
+            &q.category,
+            theme::mono(12.0),
             INK_DIM,
         );
 
-        // Streak chip
+        // Score chip (right), with bump
+        let bump = {
+            let e = (now - self.bump_start) as f32;
+            if e < 0.5 { (e / 0.5 * std::f32::consts::PI).sin() } else { 0.0 }
+        };
+        kit::score_chip(
+            ui,
+            Pos2::new(right, y + bar_h / 2.0),
+            "SCORE",
+            &self.score.to_string(),
+            bump,
+        );
+
+        // Streak chip (left of score chip) when streak > 1
         if self.streak > 1 {
-            let streak_w = 90.0_f32;
-            let streak_rect = Rect::from_center_size(
-                Pos2::new(left_pad + inner_w - streak_w - 96.0, bar_rect.center().y),
-                Vec2::new(streak_w, 26.0),
+            let label = format!("STREAK ×{}", self.streak);
+            let sz = ui
+                .painter()
+                .layout_no_wrap(label.clone(), theme::mono(10.0), GOLD)
+                .size();
+            let chip_w = sz.x + 20.0;
+            // estimate score chip width to offset
+            let score_w =
+                ui.painter()
+                    .layout_no_wrap(self.score.to_string(), theme::mono_semibold(theme::TYPE_SCORE_VALUE), WHITE)
+                    .size()
+                    .x
+                    + 70.0;
+            let cx_right = right - score_w - 10.0;
+            let chip = Rect::from_min_size(
+                Pos2::new(cx_right - chip_w, y + bar_h / 2.0 - 13.0),
+                Vec2::new(chip_w, 26.0),
             );
-            ui.painter().rect_filled(streak_rect, Rounding::same(999.0), ACCENT_SOFT);
-            ui.painter().rect_stroke(
-                streak_rect,
-                Rounding::same(999.0),
-                Stroke::new(1.0, GOLD),
-            );
-            ui.painter().text(
-                streak_rect.center(),
-                Align2::CENTER_CENTER,
-                format!("STREAK x{}", self.streak),
-                theme::mono_font(10.0),
-                GOLD,
-            );
+            painter.rect_filled(chip, Rounding::same(999.0), theme::ACCENT_SOFT);
+            painter.rect_stroke(chip, Rounding::same(999.0), Stroke::new(1.0, theme::ACCENT_SOFT));
+            painter.text(chip.center(), Align2::CENTER_CENTER, &label, theme::mono(10.0), GOLD);
         }
 
-        // Score chip
-        let chip_w = 88.0_f32;
-        let score_chip_rect = Rect::from_center_size(
-            Pos2::new(left_pad + inner_w - chip_w / 2.0, bar_rect.center().y),
-            Vec2::new(chip_w, 26.0),
-        );
-        ui.painter().rect_filled(score_chip_rect, Rounding::same(999.0), BLUE_MID);
-        ui.painter().rect_stroke(
-            score_chip_rect,
-            Rounding::same(999.0),
-            Stroke::new(1.0, LINE),
-        );
-        ui.painter().text(
-            Pos2::new(score_chip_rect.center().x - 4.0, score_chip_rect.center().y),
-            Align2::RIGHT_CENTER,
-            "SCORE",
-            theme::mono_font(10.0),
-            INK_DIM,
-        );
-        ui.painter().text(
-            Pos2::new(score_chip_rect.center().x, score_chip_rect.center().y),
-            Align2::LEFT_CENTER,
-            format!("  {}", self.score),
-            FontId::proportional(13.0),
-            WHITE,
-        );
+        y += bar_h + 10.0;
 
-        ui.add_space(10.0);
-
-        // -- Timer bar --------------------------------------------------------
+        // -- Timer bar (.it-timer) --------------------------------------------
         let ratio = (self.timer / self.timer_max).clamp(0.0, 1.0);
         let bar_color = if ratio > 0.5 {
             GREEN_CORRECT
@@ -262,197 +242,180 @@ impl TriviaScreen {
         } else {
             RED_WRONG
         };
-        let (timer_rect, _) =
-            ui.allocate_exact_size(Vec2::new(avail_w, 8.0), Sense::hover());
-        ui.painter().rect_filled(timer_rect, Rounding::same(4.0), BLUE_MID);
-        let mut filled = timer_rect;
-        filled.set_right(timer_rect.left() + timer_rect.width() * ratio);
-        ui.painter().rect_filled(filled, Rounding::same(4.0), bar_color);
+        let track = Rect::from_min_size(Pos2::new(left, y), Vec2::new(content_w, 8.0));
+        painter.rect_filled(track, Rounding::same(999.0), BLUE_MID);
+        if ratio > 0.0 {
+            let mut fill = track;
+            fill.set_right(track.left() + track.width() * ratio);
+            painter.rect_filled(fill, Rounding::same(999.0), bar_color);
+        }
+        y += 8.0 + 20.0;
 
-        ui.add_space(18.0);
+        // -- Question (.it-trivia-q) ------------------------------------------
+        let q_galley = painter.layout(
+            q.question.clone(),
+            theme::spectral_medium(27.0),
+            WHITE,
+            content_w,
+        );
+        painter.galley(Pos2::new(left, y), q_galley.clone(), WHITE);
+        y += q_galley.size().y + 20.0;
 
-        // -- Question ---------------------------------------------------------
-        ui.vertical_centered(|ui| {
-            ui.set_max_width(inner_w);
-            ui.label(
-                RichText::new(&q.question)
-                    .font(FontId::proportional(24.0))
-                    .color(WHITE),
-            );
-        });
-
-        ui.add_space(18.0);
-
-        // -- Answer options ---------------------------------------------------
-        let opt_h = 52.0_f32;
-        let opt_gap = 9.0_f32;
-        let mut clicked_idx: Option<usize> = None;
+        // -- Options (.it-options, gap 11) ------------------------------------
+        let opt_h = 54.0;
+        let opt_gap = 11.0;
+        let mut clicked_idx = None;
+        let locked = self.selected.is_some();
 
         for (i, (ans_text, is_correct)) in answers.iter().enumerate() {
-            // Allocate full width to advance cursor; draw only in the centered inner rect
-            let (alloc_rect, resp) = ui.allocate_exact_size(
-                Vec2::new(avail_w, opt_h),
-                if self.selected.is_none() { Sense::click() } else { Sense::hover() },
-            );
-            let draw_rect = Rect::from_min_size(
-                Pos2::new(alloc_rect.min.x + left_pad, alloc_rect.min.y),
-                Vec2::new(inner_w, opt_h),
+            let base = Rect::from_min_size(Pos2::new(left, y), Vec2::new(content_w, opt_h));
+            let resp = ui.interact(
+                base,
+                Id::new(("trivia_opt", self.current_idx, i)),
+                if locked { Sense::hover() } else { Sense::click() },
             );
 
-            let (bg, border, text_color, badge_bg, badge_text) = if let Some(sel) = self.selected {
+            // hover translateX(4px)
+            let hov = if locked {
+                0.0
+            } else {
+                ui.ctx().animate_bool(Id::new(("trivia_opt_h", self.current_idx, i)), resp.hovered())
+            };
+            let rect = base.translate(Vec2::new(4.0 * hov, 0.0));
+
+            // resolve state colors
+            let mut dimmed = false;
+            let (border, key_bg, key_fg, text_col, tint, ring) = if let Some(sel) = self.selected {
                 if *is_correct {
-                    (CORRECT_BG, GREEN_CORRECT, GREEN_CORRECT, GREEN_CORRECT, Color32::from_rgb(12, 26, 16))
+                    (GREEN_CORRECT, GREEN_CORRECT, Color32::from_rgb(12, 26, 16), GREEN_CORRECT, Some(CORRECT_BG), Some(GREEN_CORRECT))
                 } else if sel == i {
-                    (WRONG_BG, RED_WRONG, RED_WRONG, RED_WRONG, Color32::from_rgb(42, 12, 17))
+                    (RED_WRONG, RED_WRONG, Color32::from_rgb(42, 12, 17), RED_WRONG, Some(WRONG_BG), Some(RED_WRONG))
                 } else {
-                    (Color32::TRANSPARENT, LINE, Color32::from_rgba_premultiplied(75, 79, 100, 140), BLUE_MID, INK_DIM)
+                    dimmed = true;
+                    (LINE, BLUE_BG, INK_DIM, WHITE, None, None)
                 }
             } else if resp.hovered() {
-                (BLUE_MID, GOLD, WHITE, BLUE_MID, INK_DIM)
+                (GOLD, BLUE_BG, INK_DIM, WHITE, None, None)
             } else {
-                (BLUE_MID, LINE, WHITE, BLUE_MID, INK_DIM)
+                (LINE, BLUE_BG, INK_DIM, WHITE, None, None)
             };
+            let a = if dimmed { 0.42 } else { 1.0 };
 
-            ui.painter().rect_filled(draw_rect, Rounding::same(10.0), bg);
-            ui.painter().rect_stroke(draw_rect, Rounding::same(10.0), Stroke::new(1.0, border));
-
-            // Key badge
-            let badge_size = 26.0_f32;
-            let badge_rect = Rect::from_min_size(
-                Pos2::new(draw_rect.min.x + 14.0, draw_rect.center().y - badge_size / 2.0),
-                Vec2::splat(badge_size),
-            );
-            ui.painter().rect_filled(badge_rect, Rounding::same(6.0), badge_bg);
-            if self.selected.is_none() {
-                ui.painter().rect_stroke(
-                    badge_rect,
-                    Rounding::same(6.0),
-                    Stroke::new(1.0, LINE),
-                );
+            // base fill + optional tint
+            painter.rect_filled(rect, Rounding::same(12.0), BLUE_MID.gamma_multiply(a));
+            if let Some(t) = tint {
+                painter.rect_filled(rect, Rounding::same(12.0), t);
             }
-            ui.painter().text(
-                badge_rect.center(),
+            painter.rect_stroke(rect, Rounding::same(12.0), Stroke::new(1.0, border.gamma_multiply(a)));
+            if let Some(rc) = ring {
+                painter.rect_stroke(rect, Rounding::same(12.0), Stroke::new(1.0, rc));
+            }
+
+            // key badge
+            let badge = Rect::from_min_size(
+                Pos2::new(rect.left() + 18.0, rect.center().y - 13.0),
+                Vec2::splat(26.0),
+            );
+            painter.rect_filled(badge, Rounding::same(6.0), key_bg.gamma_multiply(a));
+            if self.selected.is_none() {
+                painter.rect_stroke(badge, Rounding::same(6.0), Stroke::new(1.0, LINE));
+            }
+            painter.text(
+                badge.center(),
                 Align2::CENTER_CENTER,
-                &char::from(b'A' + i as u8).to_string(),
-                theme::mono_font(12.0),
-                badge_text,
+                (b'A' + i as u8) as char,
+                theme::mono(12.0),
+                key_fg.gamma_multiply(a),
             );
 
-            // Answer text
-            ui.painter().text(
-                Pos2::new(badge_rect.right() + 12.0, draw_rect.center().y),
+            // answer text
+            painter.text(
+                Pos2::new(badge.right() + 14.0, rect.center().y),
                 Align2::LEFT_CENTER,
-                ans_text.as_str(),
-                theme::body_font(),
-                text_color,
+                ans_text,
+                theme::plex(15.0),
+                text_col.gamma_multiply(a),
             );
 
-            // Checkmark
-            if self.selected.is_some() && *is_correct {
-                ui.painter().text(
-                    Pos2::new(draw_rect.right() - 16.0, draw_rect.center().y),
+            // correct ✓ mark
+            if locked && *is_correct {
+                painter.text(
+                    Pos2::new(rect.right() - 18.0, rect.center().y),
                     Align2::RIGHT_CENTER,
-                    "OK",
-                    FontId::proportional(16.0),
+                    "✓",
+                    theme::plex_semibold(16.0),
                     GREEN_CORRECT,
                 );
             }
 
-            if resp.clicked() && self.selected.is_none() {
+            if resp.clicked() && !locked {
                 clicked_idx = Some(i);
             }
-
-            if i + 1 < answers.len() {
-                ui.add_space(opt_gap);
-            }
+            y += opt_h + opt_gap;
         }
 
-        // Apply answer selection
+        // apply selection
         if let Some(i) = clicked_idx {
             let is_correct = answers[i].1;
             self.selected = Some(i);
+            self.select_start = now;
+            self.bump_start = now;
             let delta = trivia_score(is_correct, self.streak);
             self.score += delta;
             if is_correct {
                 self.streak += 1;
                 self.correct_count += 1;
-                if self.streak > self.best_streak {
-                    self.best_streak = self.streak;
-                }
+                self.best_streak = self.best_streak.max(self.streak);
             } else {
                 self.streak = 0;
             }
         }
 
-        ui.add_space(16.0);
-
-        // -- Footer: gain label + next button ---------------------------------
-        let (foot_rect, _) =
-            ui.allocate_exact_size(Vec2::new(avail_w, 46.0), Sense::hover());
-
+        // -- Footer pinned to the bottom (.it-trivia-foot) --------------------
+        let mut action = None;
         if let Some(sel) = self.selected {
-            let timed = sel == usize::MAX;
+            let foot_y = screen.bottom() - 28.0 - 38.0 + ey;
+            let foot_cy = foot_y + 19.0;
 
-            let (gain_str, gain_color) = if timed {
+            // gain text with it-popup slide
+            let pe = ((now - self.select_start) / 0.5).clamp(0.0, 1.0) as f32;
+            let pe = 1.0 - (1.0 - pe).powi(3);
+            let gain_dy = (1.0 - pe) * 18.0;
+            let timed = sel == usize::MAX;
+            let (gain, gcol) = if timed {
                 ("time!".to_string(), RED_WRONG)
             } else if answers[sel].1 {
-                let g = trivia_score(true, self.streak.saturating_sub(1));
-                (format!("+{}", g), GREEN_CORRECT)
+                (format!("+{}", trivia_score(true, self.streak.saturating_sub(1))), GREEN_CORRECT)
             } else {
                 ("+0".to_string(), RED_WRONG)
             };
-
-            ui.painter().text(
-                Pos2::new(left_pad, foot_rect.center().y),
+            painter.text(
+                Pos2::new(left, foot_cy + gain_dy),
                 Align2::LEFT_CENTER,
-                &gain_str,
-                FontId::proportional(18.0),
-                gain_color,
+                &gain,
+                theme::mono_semibold(18.0),
+                gcol.gamma_multiply(pe),
             );
 
-            let btn_w = 110.0_f32;
-            let btn_rect = Rect::from_center_size(
-                Pos2::new(left_pad + inner_w - btn_w / 2.0, foot_rect.center().y),
-                Vec2::new(btn_w, 38.0),
-            );
-            let btn_resp = ui.allocate_rect(btn_rect, Sense::click());
-            let btn_fill = if btn_resp.hovered() { GOLD_HOVER } else { GOLD };
-            ui.painter().rect_filled(btn_rect, Rounding::same(999.0), btn_fill);
-            let btn_label = if self.current_idx + 1 < self.questions.len() {
-                "Next >"
+            // Next / Finish primary button, right-aligned
+            let label = if self.current_idx + 1 < self.questions.len() {
+                "Next →"
             } else {
-                "Finish >"
+                "Finish →"
             };
-            ui.painter().text(
-                btn_rect.center(),
-                Align2::CENTER_CENTER,
-                btn_label,
-                theme::body_font(),
-                Color32::from_rgb(26, 19, 4),
-            );
-            if btn_resp.clicked() {
+            let bsz = ui
+                .painter()
+                .layout_no_wrap(label.to_string(), theme::plex_semibold(14.0), WHITE)
+                .size()
+                + Vec2::new(44.0, 24.0);
+            let btn_rect = Rect::from_min_size(Pos2::new(right - bsz.x, foot_y), bsz);
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(btn_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            if kit::primary_button(&mut child, label).clicked() {
                 self.current_idx += 1;
                 self.selected = None;
                 self.timer = self.timer_max;
                 action = Some(TriviaAction::Next { score_delta: 0 });
             }
-        }
-
-        // -- Quit button ------------------------------------------------------
-        let quit_rect =
-            Rect::from_min_size(Pos2::new(avail_w - 90.0, 14.0), Vec2::new(76.0, 30.0));
-        let quit_resp = ui.allocate_rect(quit_rect, Sense::click());
-        ui.painter()
-            .rect_stroke(quit_rect, Rounding::same(999.0), Stroke::new(1.0, LINE));
-        ui.painter().text(
-            quit_rect.center(),
-            Align2::CENTER_CENTER,
-            "Quit",
-            theme::body_font(),
-            INK_DIM,
-        );
-        if quit_resp.clicked() {
-            action = Some(TriviaAction::Quit);
         }
 
         action

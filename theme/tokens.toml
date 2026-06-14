@@ -1,0 +1,80 @@
+# Infinite Trivia — design tokens (single source of truth).
+#
+# Extracted from the React prototype's studio.css (:root) and component classes
+# (the prototype lives in the gitignored design/ folder).
+# build.rs reads this file and generates compile-time constants in
+# $OUT_DIR/design_tokens.rs, which src/theme.rs includes to build the egui
+# Style / Visuals. Edit values here, not in theme.rs.
+
+# ---------------------------------------------------------------------------
+# Solid colors  (hex -> Color32::from_rgb).  Comment = the theme.rs const name.
+# ---------------------------------------------------------------------------
+[color]
+bg          = "#0a1140"   # BLUE_BG       — window / panel background
+bg_2        = "#0d1657"   # BLUE_MID      — raised panels, cards, chips
+tile_top    = "#1a2f96"   # BLUE_DARK     — Jeopardy tile fill (gradient top)
+tile_bottom = "#0f1c69"   # TILE_BOTTOM   — tile gradient bottom
+tile_flat   = "#13256f"   # TILE_FLAT     — flat tile fill
+ink         = "#f7f5ee"   # WHITE         — primary text
+ink_dim     = "#aab3e4"   # INK_DIM       — secondary / muted text
+accent      = "#f4b63f"   # GOLD          — primary accent
+accent_2    = "#ffd884"   # GOLD_HOVER    — accent hover / highlight
+good        = "#5ec98a"   # GREEN_CORRECT — correct answer
+bad         = "#e8627a"   # RED_WRONG     — wrong answer
+on_accent   = "#1a1304"   # ON_ACCENT     — ink used on top of the gold accent
+body_bg     = "#05081f"   # BODY_BG       — deepest backdrop (outside the frame)
+app_top     = "#16236c"   # APP_TOP       — radial backdrop stop (top)
+app_mid     = "#0a1140"   # APP_MID       — radial backdrop stop (mid)
+app_bottom  = "#070c30"   # APP_BOTTOM    — radial backdrop stop (bottom)
+
+# ---------------------------------------------------------------------------
+# Alpha-composited colors.  base color + alpha -> premultiplied Color32.
+# ---------------------------------------------------------------------------
+[color_alpha]
+accent_soft = { base = "#f4b63f", alpha = 0.30 }  # ACCENT_SOFT
+line        = { base = "#aab3e4", alpha = 0.18 }  # LINE
+correct_bg  = { base = "#5ec98a", alpha = 0.16 }  # CORRECT_BG
+wrong_bg    = { base = "#e8627a", alpha = 0.14 }  # WRONG_BG
+
+# ---------------------------------------------------------------------------
+# Corner radii (px)  ->  RADIUS_*
+# ---------------------------------------------------------------------------
+[radius]
+card  = 14.0    # --radius        cards, overlays
+tile  = 10.0    # --tile-radius   board tiles, options
+frame = 18.0    # app window frame
+input = 12.0    # text inputs
+pill  = 999.0   # fully-rounded pills / buttons / chips
+
+# ---------------------------------------------------------------------------
+# Spacing (px)  ->  SPACE_*
+# ---------------------------------------------------------------------------
+[spacing]
+item     = 8.0    # default egui item spacing
+button_x = 22.0   # button horizontal padding (.it-btn)
+button_y = 12.0   # button vertical padding
+gap      = 18.0   # mode-card row gap (.it-modes)
+section  = 42.0   # major vertical rhythm (.it-home gap)
+
+# ---------------------------------------------------------------------------
+# Type scale (px)  ->  TYPE_*.  Families are loaded by file in src/app.rs.
+# ---------------------------------------------------------------------------
+[font.family]
+serif = "Spectral"        # display / headings / clue text
+sans  = "IBM Plex Sans"   # UI / body / options
+mono  = "IBM Plex Mono"   # numerals, values, tags, kickers
+
+[type]
+wordmark_kicker = 30.0   # .it-wm-1   INFINITE
+wordmark_title  = 92.0   # .it-wm-2   TRIVIA
+mode_name       = 24.0   # .it-mode-name
+heading         = 30.0   # .it-round  round titles
+subheading      = 20.0
+body            = 16.0   # .it-opt body text
+dollar          = 26.0   # .it-tile span  board values
+clue            = 32.0   # .it-clue-q
+trivia_q        = 27.0   # .it-trivia-q
+qb_text         = 26.0   # .it-qb-text
+score_value     = 14.0   # .it-score-chip b
+kicker          = 11.0   # .it-home-foot, mono kickers
+chip_label      = 10.5   # .it-score-chip
