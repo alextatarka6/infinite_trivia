@@ -7,11 +7,14 @@ const CARD_BORDER_DEFAULT: Color32 = Color32::from_rgb(36, 50, 128);
 pub struct HomeScreen {
     pub level: u8,
     pub jeopardy_solo: bool,
+    pub trivia_solo: bool,
+    pub quizbowl_solo: bool,
+    pub mix_solo: bool,
 }
 
 impl Default for HomeScreen {
     fn default() -> Self {
-        Self { level: 2, jeopardy_solo: true }
+        Self { level: 2, jeopardy_solo: true, trivia_solo: true, quizbowl_solo: true, mix_solo: true }
     }
 }
 
@@ -108,6 +111,22 @@ impl HomeScreen {
         painter.add(Shape::convex_polygon(pts, GOLD, Stroke::NONE));
     }
 
+    fn draw_mix_glyph(painter: &egui::Painter, center: Pos2, s: f32) {
+        let r = 11.0 * s;
+        let stroke = Stroke::new(2.5 * s, GOLD);
+        for deg in [0.0f32, 60.0, 120.0] {
+            let rad = deg.to_radians();
+            painter.line_segment(
+                [
+                    Pos2::new(center.x + rad.cos() * r, center.y + rad.sin() * r),
+                    Pos2::new(center.x - rad.cos() * r, center.y - rad.sin() * r),
+                ],
+                stroke,
+            );
+        }
+        painter.circle_filled(center, 2.5 * s, GOLD);
+    }
+
     // Reusable score chip for other screens to call
     pub fn score_chip(painter: &egui::Painter, rect: Rect, label: &str, value: &str) {
         painter.rect_filled(rect, Rounding::same(999.0), BLUE_MID);
@@ -165,12 +184,13 @@ impl HomeScreen {
             ui.add_space(h * 0.052);
 
             // Cards row
-            let total_w = 3.0 * card_w + 2.0 * gap;
+            let total_w = 4.0 * card_w + 3.0 * gap;
 
             let cards: &[(&str, &str, Screen)] = &[
                 ("board", "Jeopardy!", Screen::JeopardySetup),
                 ("target", "General Trivia", Screen::Trivia),
                 ("play", "Quizbowl", Screen::Quizbowl),
+                ("mix", "Mix", Screen::Mix),
             ];
 
             ui.horizontal(|ui| {
@@ -211,6 +231,7 @@ impl HomeScreen {
                     match *glyph {
                         "board" => Self::draw_board_glyph(ui.painter(), glyph_center, icon_s),
                         "target" => Self::draw_target_glyph(ui.painter(), glyph_center, icon_s),
+                        "mix" => Self::draw_mix_glyph(ui.painter(), glyph_center, icon_s),
                         _ => Self::draw_play_glyph(ui.painter(), glyph_center, icon_s),
                     }
 
@@ -223,9 +244,16 @@ impl HomeScreen {
                         WHITE,
                     );
 
-                    // Solo / Teams toggle (Jeopardy only)
+                    // Solo / Teams toggle (all cards)
                     let mut toggle_clicked = false;
-                    if i == 0 {
+                    {
+                        let is_solo = match i {
+                            0 => self.jeopardy_solo,
+                            1 => self.trivia_solo,
+                            2 => self.quizbowl_solo,
+                            _ => self.mix_solo,
+                        };
+
                         let pill_cx = draw_rect.center().x;
                         let pill_cy = draw_rect.top() + card_h * 0.81;
                         let solo_w = card_w * 0.225;
@@ -248,7 +276,7 @@ impl HomeScreen {
                             Vec2::new(teams_w, inner_h),
                         );
 
-                        if self.jeopardy_solo {
+                        if is_solo {
                             ui.painter().rect_filled(solo_rect, Rounding::same(999.0), GOLD);
                         } else {
                             ui.painter().rect_filled(teams_rect, Rounding::same(999.0), GOLD);
@@ -260,34 +288,36 @@ impl HomeScreen {
                             Align2::CENTER_CENTER,
                             "Solo",
                             pill_font.clone(),
-                            if self.jeopardy_solo {
-                                Color32::from_rgb(30, 20, 5)
-                            } else {
-                                INK_DIM
-                            },
+                            if is_solo { Color32::from_rgb(30, 20, 5) } else { INK_DIM },
                         );
                         ui.painter().text(
                             teams_rect.center(),
                             Align2::CENTER_CENTER,
                             "Teams",
                             pill_font,
-                            if !self.jeopardy_solo {
-                                Color32::from_rgb(30, 20, 5)
-                            } else {
-                                INK_DIM
-                            },
+                            if !is_solo { Color32::from_rgb(30, 20, 5) } else { INK_DIM },
                         );
 
                         let solo_resp =
-                            ui.interact(solo_rect, Id::new("solo_toggle"), Sense::click());
+                            ui.interact(solo_rect, Id::new(("solo_toggle", i)), Sense::click());
                         let teams_resp =
-                            ui.interact(teams_rect, Id::new("teams_toggle"), Sense::click());
+                            ui.interact(teams_rect, Id::new(("teams_toggle", i)), Sense::click());
                         if solo_resp.clicked() {
-                            self.jeopardy_solo = true;
+                            match i {
+                                0 => self.jeopardy_solo = true,
+                                1 => self.trivia_solo = true,
+                                2 => self.quizbowl_solo = true,
+                                _ => self.mix_solo = true,
+                            }
                             toggle_clicked = true;
                         }
                         if teams_resp.clicked() {
-                            self.jeopardy_solo = false;
+                            match i {
+                                0 => self.jeopardy_solo = false,
+                                1 => self.trivia_solo = false,
+                                2 => self.quizbowl_solo = false,
+                                _ => self.mix_solo = false,
+                            }
                             toggle_clicked = true;
                         }
                     }
@@ -301,7 +331,7 @@ impl HomeScreen {
             ui.add_space(h * 0.058);
 
             // Difficulty label
-            let level_names = ["EASY", "MEDIUM", "HARD"];
+            let level_names = ["EASY", "MEDIUM", "HARD", "MIX"];
             ui.label(
                 RichText::new(format!(
                     "DIFFICULTY  ·  {}",
@@ -318,13 +348,13 @@ impl HomeScreen {
             let dot_r_sel = dot_r + w * 0.002;
             let dot_slot = dot_r_sel * 2.0;
             let rail_gap = w * 0.047;
-            let row_w = 3.0 * dot_slot + 2.0 * rail_gap;
+            let row_w = 4.0 * dot_slot + 3.0 * rail_gap;
             let left_margin = (avail.x - row_w) / 2.0 - 8.0;
 
             ui.horizontal(|ui| {
                 ui.add_space(left_margin.max(0.0));
 
-                for n in 1u8..=3 {
+                for n in 1u8..=4 {
                     let r = if n == current_level { dot_r_sel } else { dot_r };
                     let (dot_rect, dot_resp) =
                         ui.allocate_exact_size(Vec2::splat(dot_slot), Sense::click());
@@ -342,7 +372,7 @@ impl HomeScreen {
                         new_level = Some(n);
                     }
 
-                    if n < 3 {
+                    if n < 4 {
                         let (rail_rect, _) =
                             ui.allocate_exact_size(Vec2::new(rail_gap, 4.0), Sense::hover());
                         let y = rail_rect.center().y;
@@ -360,13 +390,49 @@ impl HomeScreen {
                 }
             });
 
-            ui.add_space(h * 0.03);
+            ui.add_space(h * 0.028);
 
             ui.label(
                 RichText::new("pick a mode to start")
                     .font(crate::theme::mono_font(w * 0.0098))
                     .color(INK_DIM),
             );
+
+            ui.add_space(h * 0.026);
+
+            // Multiplayer lobby button
+            let mp_btn_w = w * 0.165;
+            let mp_btn_h = 36.0;
+            let (mp_rect, mp_resp) = ui.allocate_exact_size(
+                egui::Vec2::new(mp_btn_w, mp_btn_h),
+                Sense::click(),
+            );
+            let mp_hov = ui.ctx().animate_bool(
+                Id::new("mp_btn_hover"),
+                mp_resp.hovered(),
+            );
+            let mp_border = Self::lerp_color(LINE, GOLD, mp_hov);
+            ui.painter().rect_stroke(mp_rect, Rounding::same(999.0), Stroke::new(1.0, mp_border));
+            let icon_x = mp_rect.left() + 18.0;
+            // Chain-link icon: two overlapping circles
+            let icon_cy = mp_rect.center().y;
+            for dx in [-5.0f32, 5.0f32] {
+                ui.painter().circle_stroke(
+                    Pos2::new(icon_x + dx, icon_cy),
+                    5.5,
+                    Stroke::new(1.5, mp_border),
+                );
+            }
+            ui.painter().text(
+                Pos2::new(icon_x + 18.0, icon_cy),
+                Align2::LEFT_CENTER,
+                "Multiplayer",
+                crate::theme::plex_medium(w * 0.0082),
+                WHITE.linear_multiply(0.7 + 0.3 * mp_hov),
+            );
+            if mp_resp.clicked() {
+                result = Some((Screen::Lobby, current_level));
+            }
         });
 
         if let Some(lv) = new_level {

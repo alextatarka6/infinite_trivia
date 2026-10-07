@@ -13,6 +13,7 @@ use crate::screens::jeopardy::clue::{ClueScreen, ClueState};
 use crate::screens::jeopardy::daily_double::DailyDoubleScreen;
 use crate::screens::jeopardy::final_jeopardy::FinalJeopardy;
 use crate::screens::jeopardy::setup::{JeopardySetupScreen, SetupAction};
+use crate::screens::mix::{MixPhase, MixScreen, MixSignal};
 use crate::screens::quizbowl::tossup::{TossupAction, TossupScreen, TossupState};
 use crate::screens::trivia::question::{TriviaAction, TriviaScreen};
 use crate::theme::{self, BLUE_MID, GOLD, INK_DIM, LINE, WHITE};
@@ -27,6 +28,7 @@ pub enum DevView {
     Clue(ClueScreen),
     DailyDouble(DailyDoubleScreen),
     Final(FinalJeopardy),
+    Mix(MixScreen),
 }
 
 pub struct DevMenu {
@@ -47,7 +49,7 @@ impl Default for DevMenu {
             "qb-timeout" => Some(DevView::Quizbowl(mock_qb(QbPhase::Timeout))),
             "bonus" => Some(DevView::Bonus(BonusScreen::new(mock_bonus(), 55, 3))),
             "setup" => Some(DevView::Setup(JeopardySetupScreen::default())),
-            "setup-teams" => Some(DevView::Setup(JeopardySetupScreen::dev_teams())),
+            "setup-teams" => Some(DevView::Setup(JeopardySetupScreen::default())),
             "board" => Some(DevView::Board(mock_board())),
             "clue" => Some(DevView::Clue(ClueScreen::new(mock_clue()))),
             "clue-result" => {
@@ -70,6 +72,8 @@ impl Default for DevMenu {
                 f.answered = Some(true);
                 Some(DevView::Final(f))
             }
+            "mix" => Some(DevView::Mix(mock_mix(MixPhase::JeopardyPhase))),
+            "mix-summary" => Some(DevView::Mix(mock_mix(MixPhase::Summary))),
             _ => None,
         });
         Self { view }
@@ -102,6 +106,10 @@ impl DevMenu {
                 DevView::Clue(s) => s.show(ui).is_some(),
                 DevView::DailyDouble(s) => s.show(ui).is_some(),
                 DevView::Final(s) => s.show(ui).is_some(),
+                DevView::Mix(s) => matches!(
+                    s.show(ui, dt),
+                    Some(MixSignal::Quit) | Some(MixSignal::Restart)
+                ),
             };
             if back {
                 self.view = None;
@@ -149,6 +157,8 @@ impl DevMenu {
                 ("Jeopardy · clue", || DevView::Clue(ClueScreen::new(mock_clue()))),
                 ("Jeopardy · daily double", || DevView::DailyDouble(DailyDoubleScreen::new(mock_clue(), 2400))),
                 ("Jeopardy · final", || DevView::Final(FinalJeopardy::new(mock_clue(), 5200))),
+                ("Mix · jeopardy phase", || DevView::Mix(mock_mix(MixPhase::JeopardyPhase))),
+                ("Mix · summary", || DevView::Mix(mock_mix(MixPhase::Summary))),
             ];
 
             // 3-column grid of pill buttons
@@ -379,4 +389,22 @@ fn mock_board() -> Board {
         })
         .collect();
     Board::new(categories, false, vec![("YOU".into(), 1800)])
+}
+
+fn mock_mix(phase: MixPhase) -> MixScreen {
+    let clues = vec![mock_clue(), mock_clue(), mock_clue()];
+    let mut m = MixScreen::new(clues);
+    m.trivia_score_final = 80;
+    m.quizbowl_score_final = 45;
+    match phase {
+        MixPhase::JeopardyPhase => {
+            m.phase = MixPhase::JeopardyPhase;
+        }
+        MixPhase::Summary => {
+            m.phase = MixPhase::Summary;
+            m.jeopardy_score = 600;
+        }
+        _ => {}
+    }
+    m
 }

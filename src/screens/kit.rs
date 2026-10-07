@@ -351,26 +351,41 @@ pub fn summary(
         );
         ui.add_space(26.0);
 
-        ui.horizontal(|ui| {
-            let total_w: f32 = stats.len() as f32 * 120.0;
-            ui.add_space((avail.x - total_w) / 2.0);
-            for s in stats {
-                ui.allocate_ui(Vec2::new(120.0, 60.0), |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            egui::RichText::new(&s.value)
-                                .font(theme::spectral(32.0))
-                                .color(WHITE),
-                        );
-                        ui.label(
-                            egui::RichText::new(s.label)
-                                .font(theme::mono(10.5))
-                                .color(INK_DIM),
-                        );
-                    });
-                });
-            }
-        });
+        // Stats — each in a bordered card
+        {
+            let stat_w = 110.0_f32;
+            let stat_h = 76.0_f32;
+            let stat_gap = 14.0_f32;
+            let n = stats.len() as f32;
+            let total_stat_w = n * stat_w + (n - 1.0) * stat_gap;
+            ui.horizontal(|ui| {
+                ui.add_space((avail.x - total_stat_w) / 2.0);
+                for (i, s) in stats.iter().enumerate() {
+                    if i > 0 {
+                        ui.add_space(stat_gap);
+                    }
+                    let (rect, _) =
+                        ui.allocate_exact_size(Vec2::new(stat_w, stat_h), Sense::hover());
+                    let p = ui.painter();
+                    p.rect_filled(rect, Rounding::same(10.0), BLUE_MID);
+                    p.rect_stroke(rect, Rounding::same(10.0), Stroke::new(1.0, LINE));
+                    p.text(
+                        Pos2::new(rect.center().x, rect.top() + stat_h * 0.44),
+                        Align2::CENTER_CENTER,
+                        &s.value,
+                        theme::spectral(28.0),
+                        WHITE,
+                    );
+                    p.text(
+                        Pos2::new(rect.center().x, rect.bottom() - stat_h * 0.16),
+                        Align2::CENTER_CENTER,
+                        s.label,
+                        theme::mono(10.0),
+                        INK_DIM,
+                    );
+                }
+            });
+        }
 
         ui.add_space(30.0);
         ui.horizontal(|ui| {

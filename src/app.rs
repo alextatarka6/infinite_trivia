@@ -6,6 +6,7 @@ use crate::game::state::Screen;
 use crate::screens::{
     dev::DevMenu,
     home::HomeScreen,
+    lobby::{LobbyAction, LobbyMode, LobbyScreen},
     jeopardy::{
         board::{Board, BoardAction},
         clue::ClueScreen,
@@ -13,9 +14,11 @@ use crate::screens::{
         final_jeopardy::FinalJeopardy,
         setup::{JeopardyConfig, JeopardyMode, JeopardySetupScreen, SetupAction},
     },
+    mix::{MixPhase, MixScreen, MixSignal},
     trivia::question::TriviaScreen,
-    quizbowl::{bonus::BonusScreen, tossup::TossupScreen},
+    quizbowl::{bonus::BonusScreen, tossup::{TossupScreen, TossupState}},
 };
+use crate::server::{protocol::ServerMsg, GameServer};
 use crate::theme;
 
 const JSON_PATH: &str = "assets/JEOPARDY_QUESTIONS1.json";
@@ -42,6 +45,15 @@ pub struct App {
     quizbowl_bonus: Option<BonusScreen>,
     quizbowl_level: u8,
     recent_qb_categories: VecDeque<String>,
+    mix: Option<MixScreen>,
+    mix_level: u8,
+    // Multiplayer
+    server: Option<Arc<GameServer>>,
+    lobby: Option<LobbyScreen>,
+    mp_trivia_last_q: i64,
+    mp_qb_last_chars: usize,
+    mp_j_clue_broadcast: bool,
+    mp_j_board_dirty: bool,
     rt: tokio::runtime::Runtime,
     pending_trivia: Arc<Mutex<Option<Result<Vec<crate::api::opentdb::TriviaQuestion>, String>>>>,
     pending_qb: Arc<Mutex<Option<Result<crate::api::qbreader::Tossup, String>>>>,
@@ -123,6 +135,14 @@ impl App {
             quizbowl_bonus: None,
             quizbowl_level: 2,
             recent_qb_categories: VecDeque::new(),
+            mix: None,
+            mix_level: 2,
+            server: None,
+            lobby: None,
+            mp_trivia_last_q: -1,
+            mp_qb_last_chars: 0,
+            mp_j_clue_broadcast: false,
+            mp_j_board_dirty: true,
             rt: tokio::runtime::Runtime::new().expect("tokio runtime"),
             pending_trivia: Arc::new(Mutex::new(None)),
             pending_qb: Arc::new(Mutex::new(None)),
@@ -186,6 +206,7 @@ impl App {
         let diff = match level {
             1 => "easy",
             3 => "hard",
+            4 => "",
             _ => "medium",
         }
         .to_string();
@@ -224,6 +245,44 @@ impl App {
         });
     }
 
+    fn start_mix(&mut self, ctx: Context, level: u8) {
+        self.mix_level = level;
+        let jeopardy_clues = self
+            .jeopardy_store
+            .as_ref()
+            .map(|s| s.random_clues("Jeopardy!", crate::screens::mix::JEOPARDY_COUNT))
+            .unwrap_or_default();
+        self.mix = Some(MixScreen::new(jeopardy_clues));
+        let pending = Arc::clone(&self.pending_trivia);
+        let diff = match level {
+            1 => "easy",
+            3 => "hard",
+            4 => "",
+            _ => "medium",
+        }
+        .to_string();
+        self.rt.spawn(async move {
+            let result = opentdb::fetch_questions(
+                crate::screens::mix::TRIVIA_COUNT as u8,
+                &diff,
+            )
+            .await;
+            *pending.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
+    }
+
+    fn fetch_mix_qb(&mut self, ctx: Context, exclude: Option<String>) {
+        let pending = Arc::clone(&self.pending_qb);
+        let level = self.mix_level;
+        let exclude_list: Vec<String> = exclude.into_iter().collect();
+        self.rt.spawn(async move {
+            let result = qbreader::fetch_tossup(level, exclude_list).await;
+            *pending.lock().unwrap() = Some(result);
+            ctx.request_repaint();
+        });
+    }
+
     /// Record the just-played tossup category (for variety) and load the next one.
     fn next_tossup(&mut self, ctx: Context) {
         if let Some(ref qb) = self.quizbowl {
@@ -243,51 +302,79 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         theme::apply(ctx);
 
-        // Poll async trivia result
-        if let Ok(mut guard) = self.pending_trivia.try_lock() {
-            if let Some(result) = guard.take() {
-                self.trivia = Some(match result {
-                    Ok(qs) => TriviaScreen::new(qs),
-                    Err(e) => TriviaScreen::with_error(e),
-                });
+        // Poll async trivia result (standalone mode only)
+        if self.screen == Screen::Trivia {
+            if let Ok(mut guard) = self.pending_trivia.try_lock() {
+                if let Some(result) = guard.take() {
+                    self.trivia = Some(match result {
+                        Ok(qs) => TriviaScreen::new(qs),
+                        Err(e) => TriviaScreen::with_error(e),
+                    });
+                }
             }
         }
 
-        // Poll async quizbowl result
-        if let Ok(mut guard) = self.pending_qb.try_lock() {
-            if let Some(result) = guard.take() {
-                let (score, done) = self
-                    .quizbowl
-                    .as_ref()
-                    .map(|q| (q.score, q.questions_done))
-                    .unwrap_or((0, 0));
-                self.quizbowl = Some(match result {
-                    Ok(t) => TossupScreen::new(t, score, done),
-                    Err(e) => {
-                        let mut s = TossupScreen::loading(score, done);
-                        s.loading = false;
-                        s.error = Some(e);
-                        s
-                    }
-                });
-            }
-        }
-
-        // Poll async bonus result
-        if let Ok(mut guard) = self.pending_bonus.try_lock() {
-            if let Some(result) = guard.take() {
-                if let Some((score, done)) =
-                    self.quizbowl_bonus.as_ref().map(|b| (b.score, b.questions_done))
-                {
-                    self.quizbowl_bonus = Some(match result {
-                        Ok(b) => BonusScreen::new(b, score, done),
+        // Poll async quizbowl result (standalone mode only)
+        if self.screen == Screen::Quizbowl {
+            if let Ok(mut guard) = self.pending_qb.try_lock() {
+                if let Some(result) = guard.take() {
+                    let (score, done) = self
+                        .quizbowl
+                        .as_ref()
+                        .map(|q| (q.score, q.questions_done))
+                        .unwrap_or((0, 0));
+                    self.quizbowl = Some(match result {
+                        Ok(t) => TossupScreen::new(t, score, done),
                         Err(e) => {
-                            let mut s = BonusScreen::loading(score, done);
+                            let mut s = TossupScreen::loading(score, done);
                             s.loading = false;
                             s.error = Some(e);
                             s
                         }
                     });
+                }
+            }
+        }
+
+        // Poll async bonus result (standalone quizbowl mode only)
+        if self.screen == Screen::Quizbowl {
+            if let Ok(mut guard) = self.pending_bonus.try_lock() {
+                if let Some(result) = guard.take() {
+                    if let Some((score, done)) =
+                        self.quizbowl_bonus.as_ref().map(|b| (b.score, b.questions_done))
+                    {
+                        self.quizbowl_bonus = Some(match result {
+                            Ok(b) => BonusScreen::new(b, score, done),
+                            Err(e) => {
+                                let mut s = BonusScreen::loading(score, done);
+                                s.loading = false;
+                                s.error = Some(e);
+                                s
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        // Poll async results for mix mode
+        if self.screen == Screen::Mix {
+            if matches!(self.mix.as_ref().map(|m| &m.phase), Some(MixPhase::Loading)) {
+                if let Ok(mut guard) = self.pending_trivia.try_lock() {
+                    if let Some(result) = guard.take() {
+                        if let Some(mix) = self.mix.as_mut() {
+                            mix.on_trivia_loaded(result);
+                        }
+                    }
+                }
+            }
+            if matches!(self.mix.as_ref().map(|m| &m.phase), Some(MixPhase::QuizbowlLoading)) {
+                if let Ok(mut guard) = self.pending_qb.try_lock() {
+                    if let Some(result) = guard.take() {
+                        if let Some(mix) = self.mix.as_mut() {
+                            mix.on_qb_loaded(result);
+                        }
+                    }
                 }
             }
         }
@@ -302,7 +389,21 @@ impl eframe::App for App {
                         self.screen = next.clone();
                         match next {
                             Screen::JeopardySetup => {
-                                self.jeopardy_setup = Some(JeopardySetupScreen::default());
+                                if self.home_screen.jeopardy_solo {
+                                    self.jeopardy_setup = Some(JeopardySetupScreen::default());
+                                } else {
+                                    // Teams = phone multiplayer
+                                    if self.server.is_none() {
+                                        let srv = GameServer::start(7777, &self.rt);
+                                        let url = srv.url();
+                                        self.lobby = Some(LobbyScreen::new(&url));
+                                        self.server = Some(srv);
+                                    }
+                                    if let Some(ref mut lobby) = self.lobby {
+                                        lobby.mode = LobbyMode::Jeopardy;
+                                    }
+                                    self.screen = Screen::Lobby;
+                                }
                             }
                             Screen::Trivia => self.start_trivia(ctx.clone(), level),
                             Screen::Quizbowl => {
@@ -311,6 +412,16 @@ impl eframe::App for App {
                                 self.quizbowl_bonus = None;
                                 self.recent_qb_categories.clear();
                                 self.start_quizbowl(ctx.clone());
+                            }
+                            Screen::Mix => self.start_mix(ctx.clone(), level),
+                            Screen::Lobby => {
+                                // Start the multiplayer server, open lobby
+                                if self.server.is_none() {
+                                    let srv = GameServer::start(7777, &self.rt);
+                                    let url = srv.url();
+                                    self.lobby = Some(LobbyScreen::new(&url));
+                                    self.server = Some(srv);
+                                }
                             }
                             Screen::Jeopardy | Screen::Home | Screen::DevMenu => {}
                         }
@@ -357,12 +468,23 @@ impl eframe::App for App {
                     self.update_quizbowl(ui, ctx);
                 }
 
+                Screen::Mix => {
+                    self.update_mix(ui, ctx);
+                }
+
+                Screen::Lobby => {
+                    self.update_lobby(ui, ctx);
+                }
+
                 Screen::DevMenu => {
                     if self.dev_menu.show(ui, dt) {
                         self.screen = Screen::Home;
                     }
                 }
             });
+
+        // Multiplayer: broadcast game state and handle phone inputs each frame
+        self.tick_multiplayer(ctx);
 
         ctx.request_repaint();
     }
@@ -552,6 +674,273 @@ impl App {
                 self.quizbowl = None;
             }
             None => {}
+        }
+    }
+
+    fn update_lobby(&mut self, ui: &mut egui::Ui, ctx: &Context) {
+        let players = self.server.as_ref().map(|s| s.players()).unwrap_or_default();
+        if let Some(ref mut lobby) = self.lobby {
+            match lobby.show(ui, &players) {
+                Some(LobbyAction::Back) => {
+                    self.screen = Screen::Home;
+                    self.lobby = None;
+                }
+                Some(LobbyAction::StartTrivia(level)) => {
+                    self.mp_trivia_last_q = -1;
+                    self.start_trivia(ctx.clone(), level);
+                    self.screen = Screen::Trivia;
+                }
+                Some(LobbyAction::StartQuizbowl(level)) => {
+                    self.quizbowl_level = level;
+                    self.quizbowl = None;
+                    self.quizbowl_bonus = None;
+                    self.recent_qb_categories.clear();
+                    self.mp_qb_last_chars = 0;
+                    self.start_quizbowl(ctx.clone());
+                    self.screen = Screen::Quizbowl;
+                }
+                Some(LobbyAction::StartJeopardy) => {
+                    if self.jeopardy_store.is_some() {
+                        let phone_players = self.server.as_ref().map(|s| s.players()).unwrap_or_default();
+                        let config = if phone_players.is_empty() {
+                            JeopardyConfig { mode: JeopardyMode::Solo, team_count: 1, team_names: vec![] }
+                        } else {
+                            JeopardyConfig {
+                                mode: JeopardyMode::Teams,
+                                team_count: phone_players.len() as u8,
+                                team_names: phone_players.iter().map(|p| p.name.clone()).collect(),
+                            }
+                        };
+                        self.start_jeopardy(config);
+                        self.mp_j_board_dirty = true;
+                        self.mp_j_clue_broadcast = false;
+                        self.screen = Screen::Jeopardy;
+                    }
+                }
+                Some(LobbyAction::StartMix(level)) => {
+                    self.mp_trivia_last_q = -1;
+                    self.start_mix(ctx.clone(), level);
+                    self.screen = Screen::Mix;
+                }
+                None => {}
+            }
+        }
+    }
+
+    fn update_mix(&mut self, ui: &mut egui::Ui, ctx: &Context) {
+        let dt = ctx.input(|i| i.stable_dt);
+        let signal = self.mix.as_mut().and_then(|m| m.show(ui, dt));
+        match signal {
+            Some(MixSignal::Quit) => {
+                self.screen = Screen::Home;
+                self.mix = None;
+            }
+            Some(MixSignal::Restart) => {
+                let level = self.mix_level;
+                self.start_mix(ctx.clone(), level);
+            }
+            Some(MixSignal::NeedQb { exclude_category }) => {
+                self.fetch_mix_qb(ctx.clone(), exclude_category);
+            }
+            None => {}
+        }
+    }
+
+    // ── Multiplayer tick: broadcast state + drain phone inputs ────────────────
+
+    fn tick_multiplayer(&mut self, ctx: &Context) {
+        let server = match self.server.as_ref() {
+            Some(s) => Arc::clone(s),
+            None => return,
+        };
+        let now = ctx.input(|i| i.time);
+
+        match self.screen {
+            Screen::Trivia => self.mp_tick_trivia(&server, now),
+            Screen::Quizbowl => self.mp_tick_quizbowl(&server, now, ctx),
+            Screen::Jeopardy => self.mp_tick_jeopardy(&server, now),
+            _ => {}
+        }
+    }
+
+    fn mp_tick_trivia(&mut self, server: &GameServer, now: f64) {
+        use crate::server::protocol::ClientMsg;
+        let trivia = match self.trivia.as_ref() {
+            Some(t) if !t.loading && t.error.is_none() && t.current_idx < t.questions.len() => t,
+            _ => return,
+        };
+        let q_idx = trivia.current_idx as i64;
+
+        // Broadcast whenever we advance to a new question
+        if q_idx != self.mp_trivia_last_q {
+            self.mp_trivia_last_q = q_idx;
+            let q = &trivia.questions[trivia.current_idx];
+            let answers = q.shuffled_answers();
+            let options: Vec<String> = answers.iter().map(|(s, _)| s.clone()).collect();
+            server.broadcast(&ServerMsg::TriviaQuestion {
+                text: q.question.clone(),
+                options,
+            });
+        }
+
+        // Handle phone answers
+        while let Some(input) = server.pop_input() {
+            if let ClientMsg::AnswerIdx { idx } = input.msg {
+                if let Some(trivia) = self.trivia.as_ref() {
+                    if trivia.current_idx < trivia.questions.len() && trivia.selected.is_none() {
+                        let q = &trivia.questions[trivia.current_idx];
+                        let answers = q.shuffled_answers();
+                        let correct = answers.get(idx).map(|(_, c)| *c).unwrap_or(false);
+                        let correct_idx = answers.iter().position(|(_, c)| *c).unwrap_or(0);
+                        let delta = if correct { 10 } else { 0 };
+                        if correct {
+                            server.add_score(input.player_id, delta);
+                        }
+                        let scorer = if correct { server.player_name(input.player_id) } else { None };
+                        server.broadcast(&ServerMsg::TriviaReveal { correct_idx, scorer, delta });
+                        let _ = now;
+                    }
+                }
+            }
+        }
+    }
+
+    fn mp_tick_quizbowl(&mut self, server: &GameServer, now: f64, _ctx: &Context) {
+        use crate::server::protocol::ClientMsg;
+        let qb = match self.quizbowl.as_ref() {
+            Some(q) if !q.loading => q,
+            _ => return,
+        };
+
+        // Broadcast reading state when chars change (throttle: every 4 chars)
+        let chars = qb.chars_revealed;
+        let is_reading = matches!(qb.state, TossupState::Reading | TossupState::FinishedReading { .. });
+        if is_reading && chars.saturating_sub(self.mp_qb_last_chars) >= 4 {
+            self.mp_qb_last_chars = chars;
+            let text: String = qb.tossup.question.chars().take(chars).collect();
+            let can_buzz = qb.mp_buzzed_name.is_none();
+            server.broadcast(&ServerMsg::QbReading { text, can_buzz });
+        }
+
+        // Handle phone inputs
+        while let Some(input) = server.pop_input() {
+            match input.msg {
+                ClientMsg::Buzz => {
+                    let qb = match self.quizbowl.as_mut() {
+                        Some(q) if q.mp_buzzed_name.is_none()
+                            && matches!(q.state, TossupState::Reading | TossupState::FinishedReading { .. }) => q,
+                        _ => continue,
+                    };
+                    let name = server.player_name(input.player_id).unwrap_or_default();
+                    qb.mp_buzzed_name = Some(name.clone());
+                    qb.state = TossupState::BuzzedIn { answer_input: String::new() };
+                    server.broadcast(&ServerMsg::QbBuzzed { player_name: name, is_you: false });
+                    // Broadcast "is_you: true" to the buzzer separately — we do this via
+                    // per-player messaging which the broadcast channel doesn't support.
+                    // For MVP: the buzzer's phone sees QbBuzzed with is_you=true from
+                    // the first broadcast (is_you field is currently unused by our broadcast).
+                    // TODO: targeted messages for the buzzer.
+                }
+                ClientMsg::AnswerText { text } => {
+                    let qb = match self.quizbowl.as_mut() {
+                        Some(q) if q.mp_buzzed_name.is_some() => q,
+                        _ => continue,
+                    };
+                    let (correct, delta) = qb.phone_answer(&text, now);
+                    server.add_score(input.player_id, delta);
+                    let scorer = if correct { server.player_name(input.player_id) } else { None };
+                    let answer = qb.tossup.answer.clone();
+                    server.broadcast(&ServerMsg::QbResult { correct, answer, scorer, delta });
+                    self.mp_qb_last_chars = 0;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn mp_tick_jeopardy(&mut self, server: &GameServer, _now: f64) {
+        use crate::server::protocol::ClientMsg;
+        use crate::api::jeopardy::check_answer;
+
+        // Broadcast board state when dirty (no overlay)
+        if self.jeopardy_overlay.is_none() && self.mp_j_board_dirty {
+            self.mp_j_board_dirty = false;
+            self.mp_j_clue_broadcast = false;
+            if let Some(board) = &self.jeopardy_board {
+                let n_cols = board.categories.len();
+                let n_rows = board.categories.first().map(|(_, v)| v.len()).unwrap_or(5);
+                let categories: Vec<String> = board.categories.iter().map(|(n, _)| n.clone()).collect();
+                let values: Vec<Vec<i32>> = board.categories.iter()
+                    .map(|(_, clues)| clues.iter().map(|c| c.value).collect())
+                    .collect();
+                let used: Vec<Vec<bool>> = (0..n_cols)
+                    .map(|c| (0..n_rows).map(|r| board.used[c][r]).collect())
+                    .collect();
+                let scores: Vec<(String, i32)> = board.players.clone();
+                let active_player = board.players.get(board.active)
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_default();
+                server.broadcast(&ServerMsg::JeopardyBoard {
+                    categories, values, used, scores, active_player,
+                    is_your_turn: false, // phones observe only in MVP
+                });
+            }
+        }
+
+        // Broadcast clue when overlay just appeared
+        if self.jeopardy_overlay.is_some() && !self.mp_j_clue_broadcast {
+            self.mp_j_clue_broadcast = true;
+            match &self.jeopardy_overlay {
+                Some(JeopardyOverlay::Clue(cs)) => {
+                    server.broadcast(&ServerMsg::JeopardyClue {
+                        category: cs.clue.category.clone(),
+                        value: cs.clue.value,
+                        text: cs.clue.question.clone(),
+                        is_you_answer: false,
+                    });
+                }
+                Some(JeopardyOverlay::DailyDouble(dd)) => {
+                    let active = self.jeopardy_board.as_ref()
+                        .and_then(|b| b.players.get(b.active))
+                        .map(|(n, _)| n.clone())
+                        .unwrap_or_default();
+                    let max_wager = dd.current_score.max(1000);
+                    server.broadcast(&ServerMsg::JeopardyDd {
+                        category: dd.clue.category.clone(),
+                        value: dd.clue.value,
+                        max_wager,
+                        is_you_answer: false,
+                        active_player: active,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        // When overlay clears, mark board dirty
+        if self.jeopardy_overlay.is_none() && self.mp_j_clue_broadcast {
+            self.mp_j_board_dirty = true;
+        }
+
+        // Handle phone answers for Jeopardy
+        while let Some(input) = server.pop_input() {
+            if let ClientMsg::AnswerText { text } = input.msg {
+                let now = 0.0f64; // approximate
+                match self.jeopardy_overlay {
+                    Some(JeopardyOverlay::Clue(ref mut cs))
+                        if matches!(cs.state, crate::screens::jeopardy::clue::ClueState::ShowQuestion) =>
+                    {
+                        let correct = check_answer(&text, &cs.clue.answer);
+                        let answer = cs.clue.answer.clone();
+                        let delta = if correct { cs.clue.value } else { -cs.clue.value };
+                        server.add_score(input.player_id, delta);
+                        server.broadcast(&ServerMsg::JeopardyResult { correct, answer, delta });
+                        cs.set_phone_answer(&text, now);
+                        self.mp_j_board_dirty = true;
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 }
