@@ -8,6 +8,7 @@ pub enum Screen {
     Trivia,
     Quizbowl,
     Mix,
+    Lobby,
     DevMenu,
 }
 
