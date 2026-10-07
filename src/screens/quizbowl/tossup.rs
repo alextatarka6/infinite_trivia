@@ -33,6 +33,8 @@ pub struct TossupScreen {
     pub state: TossupState,
     pub loading: bool,
     pub error: Option<String>,
+    /// Set when a phone player has buzzed; shows their name instead of the host answer input.
+    pub mp_buzzed_name: Option<String>,
     // animation bookkeeping
     enter_start: f64,
     result_start: f64,
@@ -51,6 +53,7 @@ impl TossupScreen {
             state: TossupState::Reading,
             loading: false,
             error: None,
+            mp_buzzed_name: None,
             enter_start: -1.0,
             result_start: -10.0,
             bump_start: -10.0,
@@ -69,6 +72,21 @@ impl TossupScreen {
         let mut s = Self::new(dummy, score, questions_done);
         s.loading = true;
         s
+    }
+
+    /// Called by App when a phone player answers after buzzing.
+    /// Returns (correct, score_delta) and transitions to the Result state.
+    pub fn phone_answer(&mut self, text: &str, now: f64) -> (bool, i32) {
+        let total = self.tossup.question.chars().count();
+        let correct = check_answer(text, &self.tossup.accepted_answers);
+        let delta = quizbowl_score(correct, self.chars_revealed, total);
+        self.score += delta;
+        self.chars_revealed = total;
+        self.state = TossupState::Result { correct, score_delta: delta };
+        self.result_start = now;
+        self.bump_start = now;
+        self.mp_buzzed_name = None;
+        (correct, delta)
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, dt: f32) -> Option<TossupAction> {
@@ -262,6 +280,20 @@ impl TossupScreen {
             }
 
             TossupState::BuzzedIn { ref mut answer_input } => {
+                // If a phone player buzzed, show their name and wait for their answer
+                if let Some(ref name) = self.mp_buzzed_name {
+                    painter.text(
+                        Pos2::new(left, foot_bottom - 60.0),
+                        Align2::LEFT_CENTER,
+                        format!("{} is answering on their phone…", name),
+                        theme::plex_medium(15.0),
+                        GOLD,
+                    );
+                    ui.ctx().request_repaint();
+                    // Fall through so the match arm ends — no local input shown
+                    let _ = answer_input;
+                    return None; // early return: wait for phone answer via App
+                }
                 // .it-prompt "Answer" + input row, then Submit
                 let row_y = foot_bottom - 90.0;
                 painter.text(

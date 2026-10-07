@@ -15,6 +15,7 @@ pub struct ClueScreen {
     pub clue: Clue,
     pub input: String,
     pub state: ClueState,
+    pub next_label: &'static str,
     enter_start: f64,
     result_start: f64,
     focus_input: bool,
@@ -30,6 +31,7 @@ impl ClueScreen {
             clue,
             input: String::new(),
             state: ClueState::default(),
+            next_label: "Back to board →",
             enter_start: -1.0,
             result_start: -10.0,
             focus_input: true,
@@ -98,7 +100,7 @@ impl ClueScreen {
                 y += 90.0;
                 kit::answer_reveal(ui, cx, y, "CORRECT RESPONSE", &self.clue.answer);
                 y += 58.0;
-                if kit::centered_primary(ui, cx, y, "Back to board →") {
+                if kit::centered_primary(ui, cx, y, self.next_label) {
                     action = Some(ClueAction::Done { correct });
                 }
             }
@@ -107,10 +109,18 @@ impl ClueScreen {
         action
     }
 
-    fn answer(&mut self, now: f64) {
+    pub fn answer(&mut self, now: f64) {
         let correct = check_answer(&self.input, &self.clue.answer);
         self.state = ClueState::Answered { correct };
         self.result_start = now;
+    }
+
+    /// Called by App when a phone player submits an answer.
+    pub fn set_phone_answer(&mut self, text: &str, now: f64) {
+        if matches!(self.state, ClueState::ShowQuestion) {
+            self.input = text.to_string();
+            self.answer(now);
+        }
     }
 }
 
