@@ -40,9 +40,14 @@ struct ApiQuestion {
 }
 
 pub async fn fetch_questions(amount: u8, difficulty: &str) -> Result<Vec<TriviaQuestion>, String> {
+    let diff_param = if difficulty.is_empty() {
+        String::new()
+    } else {
+        format!("&difficulty={}", difficulty)
+    };
     let url = format!(
-        "https://opentdb.com/api.php?amount={}&type=multiple&encode=url3986&difficulty={}",
-        amount, difficulty
+        "https://opentdb.com/api.php?amount={}&type=multiple&encode=url3986{}",
+        amount, diff_param
     );
     let resp = reqwest::get(&url)
         .await

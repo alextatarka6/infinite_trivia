@@ -60,7 +60,11 @@ pub async fn fetch_tossup(level: u8, exclude_categories: Vec<String>) -> Result<
 }
 
 /// qbreader difficulty 1-10: 1-4 = easy HS/MS, 5-7 = mid HS, 8-10 = hard HS/college
+/// level 4 = Mix: no filter, returns any difficulty
 fn difficulty_params(level: u8) -> String {
+    if level >= 4 {
+        return String::new();
+    }
     let difficulties: &[u8] = match level {
         1 => &[1, 2, 3, 4],
         3 => &[8, 9, 10],
