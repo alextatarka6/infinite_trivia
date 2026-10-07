@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod game;
 mod screens;
+mod server;
 mod theme;
 
 fn main() -> eframe::Result<()> {

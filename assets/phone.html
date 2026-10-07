@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Infinite Trivia</title>
+<style>
+:root {
+  --bg: #050716;
+  --panel: #0e1340;
+  --dark: #0a0f35;
+  --gold: #e8b32a;
+  --white: #f0f4ff;
+  --dim: #7a8ab0;
+  --green: #22c55e;
+  --red: #ef4444;
+  --r: 12px;
+  --r-sm: 8px;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg);color:var(--white);font-family:system-ui,-apple-system,sans-serif}
+#app{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 20px;gap:0}
+
+/* ── Typography ── */
+.wordmark{font-size:2rem;color:var(--gold);letter-spacing:.06em;font-weight:700;margin-bottom:4px}
+.sub{font-size:.75rem;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:20px}
+.tag{font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:8px}
+.status{color:var(--dim);font-size:.95rem;text-align:center;line-height:1.5}
+
+/* ── Inputs ── */
+.text-input{
+  background:var(--panel);border:1px solid rgba(255,255,255,.12);
+  color:var(--white);font-size:1.05rem;padding:14px 16px;
+  border-radius:var(--r);width:100%;transition:border-color .15s
+}
+.text-input:focus{outline:none;border-color:var(--gold)}
+.num-input{text-align:center;font-size:1.3rem;font-weight:600}
+
+/* ── Buttons ── */
+.btn-primary{
+  background:var(--gold);color:#1a1200;font-size:1rem;font-weight:700;
+  padding:14px 28px;border-radius:999px;border:none;cursor:pointer;
+  width:100%;transition:transform .1s,opacity .1s
+}
+.btn-primary:active{transform:scale(.97)}
+.btn-primary:disabled{opacity:.4;cursor:default}
+
+.btn-ghost{
+  background:transparent;color:var(--dim);font-size:.9rem;
+  padding:10px 20px;border-radius:999px;border:1px solid rgba(255,255,255,.12);
+  cursor:pointer;width:100%;transition:border-color .15s
+}
+.btn-ghost:hover{border-color:var(--gold)}
+
+.buzz-btn{
+  width:172px;height:172px;border-radius:50%;
+  background:var(--gold);color:#1a1200;
+  font-size:1.7rem;font-weight:800;letter-spacing:.04em;
+  border:none;cursor:pointer;
+  box-shadow:0 0 48px rgba(232,179,42,.35),0 0 0 4px rgba(232,179,42,.15);
+  transition:transform .1s,box-shadow .1s;
+  flex-shrink:0
+}
+.buzz-btn:active{transform:scale(.93);box-shadow:0 0 24px rgba(232,179,42,.2)}
+.buzz-btn:disabled{background:#3a3520;color:#6a5a20;box-shadow:none;cursor:default}
+
+/* ── Option rows ── */
+.options{display:flex;flex-direction:column;gap:10px;width:100%}
+.opt{
+  background:var(--panel);border:1px solid rgba(255,255,255,.1);
+  color:var(--white);font-size:.95rem;padding:15px 18px;
+  border-radius:var(--r);text-align:left;cursor:pointer;
+  display:flex;align-items:center;gap:12px;
+  transition:border-color .12s,background .12s
+}
+.opt:active{transform:scale(.99)}
+.opt.correct{background:rgba(34,197,94,.12);border-color:var(--green);pointer-events:none}
+.opt.wrong{background:rgba(239,68,68,.12);border-color:var(--red);pointer-events:none}
+.opt.dim{opacity:.45;pointer-events:none}
+.opt-key{
+  display:flex;align-items:center;justify-content:center;
+  width:26px;height:26px;border-radius:6px;flex-shrink:0;
+  background:var(--dark);border:1px solid rgba(255,255,255,.15);
+  font-size:.78rem;color:var(--dim)
+}
+
+/* ── Cards / Chips ── */
+.card{background:var(--panel);border:1px solid rgba(255,255,255,.08);border-radius:var(--r);padding:16px 20px}
+.player-row{
+  display:flex;justify-content:space-between;align-items:center;
+  background:var(--panel);border:1px solid rgba(255,255,255,.07);
+  border-radius:var(--r-sm);padding:11px 16px;font-size:.9rem
+}
+.player-row.me{border-color:var(--gold)}
+.score-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:12px}
+.chip{
+  background:var(--panel);border-radius:999px;padding:6px 14px;
+  font-size:.8rem;color:var(--dim);display:flex;gap:6px;align-items:center
+}
+.chip b{color:var(--white);font-weight:600}
+
+/* ── Verdict banner ── */
+.verdict{
+  font-size:1.4rem;font-weight:700;text-align:center;
+  padding:18px 24px;border-radius:var(--r);margin-bottom:12px;width:100%
+}
+.verdict.correct{background:rgba(34,197,94,.14);color:var(--green)}
+.verdict.wrong{background:rgba(239,68,68,.14);color:var(--red)}
+.answer-text{font-size:.95rem;color:var(--dim);text-align:center}
+.answer-text span{color:var(--white);font-weight:600}
+
+/* ── Jeopardy board ── */
+.board-wrap{width:100%;overflow-x:auto}
+.board{display:grid;gap:3px;min-width:300px}
+.b-cat{
+  background:var(--dark);border-radius:4px;
+  font-size:.6rem;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);
+  display:flex;align-items:center;justify-content:center;text-align:center;
+  padding:6px 2px;min-height:40px;line-height:1.2
+}
+.b-cell{
+  background:var(--panel);border-radius:4px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:.95rem;font-weight:700;color:var(--gold);
+  min-height:44px;cursor:pointer;border:1px solid transparent;
+  transition:border-color .1s,background .1s
+}
+.b-cell:active{border-color:var(--gold);background:rgba(232,179,42,.08)}
+.b-cell.used{color:var(--dim);background:rgba(14,19,64,.4);cursor:default;pointer-events:none}
+.b-cell.no-pick{cursor:default}
+
+/* ── Loader dots ── */
+.dots{display:flex;gap:8px;justify-content:center;margin:16px 0}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--gold);animation:dp 1.2s ease-in-out infinite}
+.dot:nth-child(2){animation-delay:.18s}
+.dot:nth-child(3){animation-delay:.36s}
+@keyframes dp{0%,80%,100%{transform:scale(.55);opacity:.35}40%{transform:scale(1);opacity:1}}
+
+/* ── Form wrapper ── */
+.form{width:100%;max-width:400px;display:flex;flex-direction:column;gap:12px}
+.clue-text{font-size:1.15rem;line-height:1.55;text-align:center;max-width:400px;margin-bottom:8px}
+.cat-line{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+.cat-name{font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--gold)}
+.cat-val{font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.question-text{font-size:1.2rem;line-height:1.5;text-align:center;max-width:420px;margin-bottom:4px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+"use strict";
+let ws = null, myId = null;
+let S = {phase:'connecting'};
+
+function connect(){
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  ws.onclose = () => { S={phase:'connecting'}; render(); setTimeout(connect,2000); };
+  ws.onerror = () => {};
+  ws.onmessage = e => { try{ handle(JSON.parse(e.data)); }catch(_){} };
+}
+
+function send(m){ if(ws && ws.readyState===1) ws.send(JSON.stringify(m)); }
+
+function handle(m){
+  switch(m.type){
+    case 'lobby':
+      if(!myId && m.you) myId = m.you;
+      S = myId ? {phase:'lobby', players:m.players} : {phase:'join'};
+      break;
+    case 'trivia_question':
+      S = {phase:'tq', text:m.text, options:m.options, selected:null};
+      break;
+    case 'trivia_reveal':
+      S = {...S, phase:'tr', correctIdx:m.correct_idx, scorer:m.scorer, delta:m.delta};
+      break;
+    case 'qb_reading':
+      S = {phase:'qbr', text:m.text, canBuzz:m.can_buzz};
+      break;
+    case 'qb_buzzed':
+      S = {phase: m.is_you ? 'qba' : 'qbw', playerName:m.player_name};
+      break;
+    case 'qb_result':
+      S = {phase:'qbres', correct:m.correct, answer:m.answer, scorer:m.scorer, delta:m.delta};
+      break;
+    case 'jeopardy_board':
+      S = {phase:'jb', cats:m.categories, values:m.values, used:m.used,
+           scores:m.scores, isYourTurn:m.is_your_turn, active:m.active_player};
+      break;
+    case 'jeopardy_clue':
+      S = {phase:'jc', cat:m.category, value:m.value, text:m.text, isYou:m.is_you_answer, buzzed:false};
+      break;
+    case 'jeopardy_dd':
+      S = {phase:'jdd', cat:m.category, value:m.value, max:m.max_wager,
+           isYou:m.is_you_answer, active:m.active_player};
+      break;
+    case 'jeopardy_result':
+      S = {phase:'jres', correct:m.correct, answer:m.answer, delta:m.delta};
+      break;
+    case 'waiting':
+      S = {phase:'wait', msg:m.msg};
+      break;
+    case 'scores':
+      if(S.scores !== undefined) S.scores = m.scores;
+      break;
+  }
+  render();
+}
+
+function view(){
+  switch(S.phase){
+    case 'connecting': return `
+      <div class="wordmark">TRIVIA</div>
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <p class="status">Connecting…</p>`;
+
+    case 'join': return `
+      <div class="wordmark">TRIVIA</div>
+      <div class="sub">Infinite</div>
+      <div class="form">
+        <p class="tag">Enter your name</p>
+        <input id="name-in" class="text-input" type="text" placeholder="Your name" maxlength="20" autocomplete="off">
+        <button class="btn-primary" id="join-btn">Join Game →</button>
+      </div>`;
+
+    case 'lobby': return `
+      <div class="wordmark">LOBBY</div>
+      <p class="status" style="margin-bottom:16px">Waiting for host to start…</p>
+      <div class="form">
+        ${(S.players||[]).map(p=>`
+          <div class="player-row${p.id===myId?' me':''}">
+            <span>${esc(p.name)}${p.id===myId?' <span style="color:var(--gold);font-size:.75rem">YOU</span>':''}</span>
+            <span style="color:var(--gold);font-weight:600">${p.score}</span>
+          </div>`).join('')}
+        ${(S.players||[]).length===0?'<p class="status">Be the first to join!</p>':''}
+      </div>`;
+
+    case 'tq': return `
+      <p class="question-text">${esc(S.text)}</p>
+      <div class="options">
+        ${S.options.map((o,i)=>{
+          let cls = S.selected!==null ? (i===S.selected?'wrong':'dim') : '';
+          return `<button class="opt ${cls}" data-i="${i}" ${S.selected!==null?'disabled':''}>
+            <span class="opt-key">${String.fromCharCode(65+i)}</span>${esc(o)}</button>`;
+        }).join('')}
+      </div>`;
+
+    case 'tr': return `
+      <p class="question-text" style="margin-bottom:16px">${esc(S.text||'')}</p>
+      <div class="options">
+        ${(S.options||[]).map((o,i)=>{
+          let cls = i===S.correctIdx ? 'correct' : 'dim';
+          return `<button class="opt ${cls}">
+            <span class="opt-key">${String.fromCharCode(65+i)}</span>${esc(o)}</button>`;
+        }).join('')}
+      </div>
+      <div style="margin-top:14px;text-align:center">
+        ${S.scorer
+          ? `<p style="color:var(--green);font-weight:700">✓ ${esc(S.scorer)} +${S.delta}</p>`
+          : `<p class="status">No one answered in time</p>`}
+      </div>`;
+
+    case 'qbr': return `
+      <p class="tag">Quizbowl</p>
+      <div class="card" style="max-width:420px;width:100%;margin-bottom:24px">
+        <p style="font-size:1rem;line-height:1.6">${esc(S.text)}…</p>
+      </div>
+      ${S.canBuzz
+        ? `<button class="buzz-btn" id="buzz-btn">BUZZ</button>`
+        : `<button class="buzz-btn" disabled>BUZZ</button>`}`;
+
+    case 'qba': return `
+      <p class="tag">You buzzed! Answer quickly:</p>
+      <div class="form">
+        <input id="ans-in" class="text-input" type="text" placeholder="Your answer…" autocomplete="off" autofocus>
+        <button class="btn-primary" id="sub-ans">Submit →</button>
+      </div>`;
+
+    case 'qbw': return `
+      <p class="status">${esc(S.playerName)} buzzed in…</p>
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+
+    case 'qbres': return `
+      <div class="verdict ${S.correct?'correct':'wrong'}">${S.correct?'✓ Correct!':'✗ Wrong'}</div>
+      <p class="answer-text">Correct answer: <span>${esc(S.answer)}</span></p>
+      ${S.scorer?`<p style="margin-top:10px;text-align:center;color:var(--green)">${esc(S.scorer)} +${S.delta}</p>`:''}`;
+
+    case 'jb': {
+      const {cats,values,used,scores,isYourTurn,active} = S;
+      const nC = (cats||[]).length, nR = (values&&values[0])?values[0].length:0;
+      const colW = nC ? `repeat(${nC},1fr)` : '1fr';
+      return `
+        <p class="tag" style="margin-bottom:6px">${isYourTurn?'🎯 Your turn — pick a clue!':esc(active)+"'s turn"}</p>
+        <div class="board-wrap">
+          <div class="board" style="grid-template-columns:${colW}">
+            ${(cats||[]).map(c=>`<div class="b-cat">${esc(c)}</div>`).join('')}
+            ${Array.from({length:nR},(_,r)=>
+              Array.from({length:nC},(_,c)=>{
+                const u = used&&used[c]&&used[c][r];
+                const v = values&&values[c]&&values[c][r]?'$'+values[c][r]:'';
+                const noClick = u||!isYourTurn;
+                return `<div class="b-cell${u?' used':''}${noClick?' no-pick':''}" data-c="${c}" data-r="${r}">${u?'':v}</div>`;
+              }).join('')
+            ).join('')}
+          </div>
+        </div>
+        ${scores&&scores.length?`
+          <div class="score-row">
+            ${scores.map(([n,s])=>`<div class="chip"><span>${esc(n)}</span><b>${s>=0?s:'-$'+Math.abs(s)}</b></div>`).join('')}
+          </div>`:''}`;
+    }
+
+    case 'jc': return `
+      <div class="cat-line"><span class="cat-name">${esc(S.cat)}</span><span class="cat-val">$${S.value}</span></div>
+      <p class="clue-text">${esc(S.text)}</p>
+      ${S.isYou && !S.buzzed ? `
+        <div class="form">
+          <p class="tag">What is…</p>
+          <input id="ans-in" class="text-input" type="text" placeholder="Your answer…" autocomplete="off">
+          <button class="btn-primary" id="sub-ans">Submit →</button>
+        </div>` :
+      S.buzzed ? `<p class="status">Waiting for result…</p><div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>` :
+      `<button class="buzz-btn" id="buzz-btn">BUZZ</button>`}`;
+
+    case 'jdd': return `
+      <p class="tag" style="color:var(--gold);font-size:.9rem;margin-bottom:12px">✦ DAILY DOUBLE</p>
+      <div class="cat-line"><span class="cat-name">${esc(S.cat)}</span></div>
+      ${S.isYou ? `
+        <div class="form">
+          <p class="tag">Your wager (max $${S.max})</p>
+          <input id="wager-in" class="text-input num-input" type="number" min="5" max="${S.max}" placeholder="${S.max}">
+          <button class="btn-primary" id="wager-btn">Wager →</button>
+        </div>` :
+      `<p class="status">${esc(S.active)} is wagering…</p><div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`}`;
+
+    case 'jres': return `
+      <div class="verdict ${S.correct?'correct':'wrong'}">${S.correct?'✓ Correct!':'✗ Wrong'}</div>
+      <p class="answer-text">Correct answer: <span>${esc(S.answer)}</span></p>
+      ${S.delta!==0?`<p style="margin-top:10px;text-align:center;font-weight:700;color:${S.delta>0?'var(--green)':'var(--red)'}">${S.delta>0?'+$':'−$'}${Math.abs(S.delta)}</p>`:''}`;
+
+    case 'wait': return `
+      <p class="status">${esc(S.msg||'Waiting…')}</p>
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+
+    default: return `<div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+  }
+}
+
+function render(){
+  document.getElementById('app').innerHTML = view();
+  attach();
+}
+
+function attach(){
+  const joinBtn = document.getElementById('join-btn');
+  if(joinBtn){
+    const inp = document.getElementById('name-in');
+    if(inp){ inp.addEventListener('keydown', e=>{ if(e.key==='Enter') doJoin(); }); setTimeout(()=>inp.focus(),60); }
+    joinBtn.addEventListener('click', doJoin);
+  }
+  const buzzBtn = document.getElementById('buzz-btn');
+  if(buzzBtn) buzzBtn.addEventListener('click', ()=>{
+    send({type:'buzz'});
+    if(S.phase==='jc'){ S.buzzed=true; render(); }
+  });
+  document.querySelectorAll('.opt[data-i]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      if(S.selected!==null) return;
+      const i = parseInt(b.dataset.i);
+      S.selected=i; S.phase='tq'; render();
+      send({type:'answer_idx',idx:i});
+    });
+  });
+  const subAns = document.getElementById('sub-ans');
+  if(subAns){
+    const inp = document.getElementById('ans-in');
+    if(inp){ inp.addEventListener('keydown', e=>{ if(e.key==='Enter') doAnswer(); }); setTimeout(()=>inp.focus(),60); }
+    subAns.addEventListener('click', doAnswer);
+  }
+  const wagerBtn = document.getElementById('wager-btn');
+  if(wagerBtn){
+    wagerBtn.addEventListener('click', ()=>{
+      const inp = document.getElementById('wager-in');
+      const amt = Math.max(5, Math.min(S.max, parseInt(inp?inp.value:'0')||S.max));
+      send({type:'wager',amount:amt});
+      S.phase='wait'; render();
+    });
+  }
+  if(S.phase==='jb' && S.isYourTurn){
+    document.querySelectorAll('.b-cell:not(.used):not(.no-pick)').forEach(cell=>{
+      cell.addEventListener('click', ()=>{
+        send({type:'pick_clue',col:parseInt(cell.dataset.c),row:parseInt(cell.dataset.r)});
+        S.phase='wait'; render();
+      });
+    });
+  }
+}
+
+function doJoin(){
+  const inp = document.getElementById('name-in');
+  const name = inp?inp.value.trim():'';
+  if(!name) return;
+  send({type:'join',name});
+  S={phase:'lobby',players:[]};
+  render();
+}
+
+function doAnswer(){
+  const inp = document.getElementById('ans-in');
+  const text = inp?inp.value.trim():'';
+  send({type:'answer_text',text});
+  S.phase='wait'; render();
+}
+
+function esc(s){
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+render();
+connect();
+</script>
+</body>
+</html>
