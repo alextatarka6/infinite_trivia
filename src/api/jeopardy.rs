@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::sync::LazyLock;
 use std::collections::HashMap;
 use serde::Deserialize;
 
@@ -29,12 +31,97 @@ impl From<&JeopardyRecord> for Clue {
         Clue {
             category: r.category.clone(),
             value: parse_value(r.value.as_deref()),
-            question: r.question.trim_matches('\'').to_string(),
-            answer: r.answer.clone(),
+            question: correct_question(&strip_html(r.question.trim_matches('\''))),
+            answer: strip_html(&r.answer),
             round: r.round.clone(),
             air_date: r.air_date.clone(),
         }
     }
+}
+
+// Set of common lowercase English words used as the spell-correction vocabulary.
+// Proper nouns (always capitalized in Jeopardy text) are intentionally excluded so
+// we never mangle names, places, or show-specific terms.
+static COMMON: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "by", "as", "is", "was", "are", "were", "be", "been",
+        "have", "has", "had", "do", "does", "did", "will", "not", "no",
+        "this", "that", "from", "which", "who", "what", "it", "its",
+        "he", "she", "we", "they", "his", "her", "our", "also", "if",
+        "all", "two", "one", "so", "then", "too", "than", "into", "up",
+        "out", "over", "own", "off", "now", "can", "may", "only",
+        "time", "year", "way", "man", "men", "old", "new",
+        "made", "came", "come", "take", "make", "like", "give", "most",
+        "many", "long", "more", "part", "well", "good", "said", "get",
+        "use", "day", "how", "when", "see", "him", "name", "very",
+        "after", "back", "just", "know", "go", "first", "any", "some",
+        "last", "other", "same", "great", "such", "even", "here",
+        "much", "down", "used", "right", "large", "high", "both",
+        "each", "every", "never", "still", "always", "often", "once",
+        "about", "above", "below", "before", "since", "while", "there",
+        "where", "these", "those", "them", "than", "been", "being",
+        "would", "could", "should", "might", "shall", "must", "need",
+        "kept", "put", "set", "let", "run", "add", "try", "ask",
+        "met", "got", "led", "won", "ran", "sat", "cut", "hit",
+    ].iter().copied().collect()
+});
+
+/// Auto-correct short, all-lowercase words that are one edit away from a common
+/// English word. Only touches function words — proper nouns stay untouched because
+/// Jeopardy capitalizes them.
+fn correct_question(text: &str) -> String {
+    text.split(' ')
+        .map(|token| {
+            // Guard: purely lowercase ASCII letters, 3–6 chars
+            if token.len() < 3
+                || token.len() > 6
+                || !token.bytes().all(|b| b.is_ascii_lowercase())
+            {
+                return token.to_string();
+            }
+            if COMMON.contains(token) {
+                return token.to_string();
+            }
+            // Find a common word one edit away
+            COMMON
+                .iter()
+                .find(|&&w| {
+                    (w.len() as isize - token.len() as isize).unsigned_abs() <= 1
+                        && levenshtein(token, w) == 1
+                })
+                .map(|w| w.to_string())
+                .unwrap_or_else(|| token.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn strip_html(s: &str) -> String {
+    // Semantic line breaks → newline so the text wraps naturally
+    let s = s
+        .replace("<br />", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br>", "\n");
+    // Strip remaining tags
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    // Decode common entities
+    out.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
 }
 
 fn parse_value(s: Option<&str>) -> i32 {
@@ -149,6 +236,7 @@ impl JeopardyStore {
 }
 
 /// Case-insensitive fuzzy match; strips leading "what is / who is".
+/// Tolerates 1 spelling error on answers ≥5 chars, 2 errors on ≥10 chars.
 pub fn check_answer(given: &str, expected: &str) -> bool {
     let normalize = |s: &str| -> String {
         s.to_lowercase()
@@ -161,5 +249,34 @@ pub fn check_answer(given: &str, expected: &str) -> bool {
     };
     let g = normalize(given);
     let e = normalize(expected);
-    g == e || e.contains(&g) || g.contains(&e)
+    if g == e || e.contains(&g) || g.contains(&e) {
+        return true;
+    }
+    // Fuzzy: allow typos proportional to answer length
+    let tolerance = match e.len() {
+        0..=4 => 0,
+        5..=9 => 1,
+        _ => 2,
+    };
+    tolerance > 0 && levenshtein(&g, &e) <= tolerance
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (m, n) = (a.len(), b.len());
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0usize; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            curr[j] = if a[i - 1] == b[j - 1] {
+                prev[j - 1]
+            } else {
+                1 + prev[j - 1].min(prev[j]).min(curr[j - 1])
+            };
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
 }
