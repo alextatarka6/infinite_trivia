@@ -216,6 +216,52 @@ impl JeopardyStore {
         Some(board)
     }
 
+    /// Returns up to `count` random clues from `round` with positive values.
+    pub fn random_clues(&self, round: &str, count: usize) -> Vec<Clue> {
+        let mut records: Vec<&JeopardyRecord> = self
+            .index
+            .iter()
+            .filter(|((r, _), _)| r == round)
+            .flat_map(|(_, v)| v.iter())
+            .filter(|r| {
+                r.value
+                    .as_deref()
+                    .map_or(false, |v| v != "None" && !v.is_empty())
+            })
+            .collect();
+
+        if records.is_empty() {
+            return vec![];
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let mut rng = now
+            .as_secs()
+            .wrapping_mul(2_654_435_761)
+            .wrapping_add(now.subsec_nanos() as u64);
+        let lcg = |s: &mut u64| -> usize {
+            *s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (*s >> 33) as usize
+        };
+
+        let n = records.len();
+        for i in (1..n).rev() {
+            let j = lcg(&mut rng) % (i + 1);
+            records.swap(i, j);
+        }
+
+        records
+            .into_iter()
+            .map(Clue::from)
+            .filter(|c| c.value > 0)
+            .take(count)
+            .collect()
+    }
+
     pub fn random_final(&self) -> Option<Clue> {
         let finals: Vec<&JeopardyRecord> = self
             .index
