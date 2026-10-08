@@ -9,12 +9,6 @@ pub struct Tossup {
     pub difficulty: String,
 }
 
-impl Tossup {
-    pub fn words(&self) -> Vec<&str> {
-        self.question.split_whitespace().collect()
-    }
-}
-
 /// A quizbowl bonus: a leadin read aloud, then (usually three) parts, each with
 /// its own answer. In solo play the controlling player answers every part.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,13 +194,24 @@ fn parse_answer(raw: &str) -> (String, Vec<String>) {
 }
 
 pub fn check_answer(given: &str, accepted: &[String]) -> bool {
-    let norm = |s: &str| s.to_lowercase().trim().to_string();
-    let g = norm(given);
-    if g.is_empty() {
-        return false;
+    crate::game::answer::is_correct(given, accepted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_answer;
+
+    #[test]
+    fn parses_accept_blocks() {
+        let (display, accepted) = parse_answer("George Washington [accept Washington; or G. Washington; prompt on George]");
+        assert_eq!(display, "George Washington");
+        assert!(accepted.contains(&"Washington".to_string()));
+        assert!(accepted.contains(&"George Washington".to_string()));
     }
-    accepted.iter().any(|a| {
-        let e = norm(a);
-        g == e || e.contains(&g) || g.contains(&e)
-    })
+
+    #[test]
+    fn ignores_prompt_only_blocks() {
+        let (_, accepted) = parse_answer("photosynthesis [prompt on light reactions]");
+        assert_eq!(accepted, vec!["photosynthesis".to_string()]);
+    }
 }
