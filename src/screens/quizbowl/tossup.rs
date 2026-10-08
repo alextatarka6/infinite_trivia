@@ -1,11 +1,12 @@
-use egui::{Align2, Color32, Id, Pos2, Rect, RichText, Rounding, Sense, TextFormat, Vec2};
+//! Quizbowl tossup — "06 Quizbowl" in the Roster hi-fi.
+
+use egui::{Align2, Id, Key, Pos2, Rect, Sense, Stroke, TextFormat, Vec2};
 use egui::text::LayoutJob;
 use crate::api::qbreader::{check_answer, Tossup};
 use crate::game::scoring::quizbowl_score;
-use crate::screens::kit;
-use crate::theme::{
-    self, ACCENT_SOFT, GOLD, GREEN_CORRECT, INK_DIM, ON_ACCENT, RED_WRONG, WHITE,
-};
+use crate::screens::kit::{self, Btn, Canvas, RosterEntry, TagStyle, Texture};
+use crate::screens::trivia::question::error_screen;
+use crate::theme::{self, BAD, GOLD, GOOD, INK, MUTED, ON_BAD, ON_GOLD, ON_GOOD, PANEL};
 
 const CHARS_PER_SECOND: f32 = 20.0;
 
@@ -35,6 +36,8 @@ pub struct TossupScreen {
     pub error: Option<String>,
     /// Set when a phone player has buzzed; shows their name instead of the host answer input.
     pub mp_buzzed_name: Option<String>,
+    /// Phone players' (name, score), set by App during a phone game.
+    pub phones: Vec<(String, i32)>,
     // animation bookkeeping
     enter_start: f64,
     result_start: f64,
@@ -54,6 +57,7 @@ impl TossupScreen {
             loading: false,
             error: None,
             mp_buzzed_name: None,
+            phones: Vec::new(),
             enter_start: -1.0,
             result_start: -10.0,
             bump_start: -10.0,
@@ -90,33 +94,13 @@ impl TossupScreen {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, dt: f32) -> Option<TossupAction> {
-        kit::ambient(ui.ctx());
-
-        // -- Loading ----------------------------------------------------------
+        kit::backdrop(ui.ctx(), Some(Texture::Scan));
         if self.loading {
-            kit::loader(ui, "Finding a tossup…");
+            kit::loading(ui, "FINDING A TOSSUP", "QUIZBOWL · QBREADER", None);
             return None;
         }
-
-        // -- Error ------------------------------------------------------------
         if let Some(err) = self.error.clone() {
-            let mut action = None;
-            let avail = ui.available_size();
-            ui.add_space((avail.y - 120.0).max(16.0) / 2.0);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    RichText::new("Could not fetch question")
-                        .font(theme::spectral(26.0))
-                        .color(RED_WRONG),
-                );
-                ui.add_space(8.0);
-                ui.label(RichText::new(&err).font(theme::plex(14.0)).color(INK_DIM));
-                ui.add_space(18.0);
-                if kit::primary_button(ui, "Back to menu").clicked() {
-                    action = Some(TossupAction::Quit);
-                }
-            });
-            return action;
+            return error_screen(ui, "COULD NOT FETCH A TOSSUP", &err).then_some(TossupAction::Quit);
         }
 
         let now = ui.input(|i| i.time);
@@ -126,238 +110,187 @@ impl TossupScreen {
         if kit::quit_button(ui) {
             return Some(TossupAction::Quit);
         }
-
         let total_chars = self.tossup.question.chars().count();
 
-        // -- Advance typewriter reveal ----------------------------------------
+        // -- Advance the reading ---------------------------------------------------------
         if matches!(self.state, TossupState::Reading) {
             self.char_timer += dt;
             self.chars_revealed = ((self.char_timer * CHARS_PER_SECOND) as usize).min(total_chars);
             if self.chars_revealed >= total_chars {
                 self.state = TossupState::FinishedReading { elapsed: 0.0 };
             }
+            ui.ctx().request_repaint();
         }
         if let TossupState::FinishedReading { ref mut elapsed } = self.state {
             *elapsed += dt;
+            ui.ctx().request_repaint();
             if *elapsed >= 5.0 {
                 self.state = TossupState::TimedOut;
             }
         }
 
+        let c = Canvas::new(ui.ctx());
+        let painter = ui.painter().clone();
         let revealed: String = self.tossup.question.chars().take(self.chars_revealed).collect();
         let remaining: String = self.tossup.question.chars().skip(self.chars_revealed).collect();
 
-        // -- Geometry (.it-qb padding 24 / 48 / 28) ---------------------------
-        let screen = ui.ctx().screen_rect();
-        let avail_w = ui.available_width();
-        let content_w = (avail_w - 96.0).min(860.0).max(420.0);
-        let left = (avail_w - content_w) / 2.0;
-        let right = left + content_w;
-        let ey = kit::enter_offset(ui, self.enter_start);
-        let painter = ui.painter().clone();
-
-        // -- Top bar (.it-qb-bar) ---------------------------------------------
-        let bar_cy = 24.0 + 15.0 + ey;
-        painter.text(
-            Pos2::new(left, bar_cy),
-            Align2::LEFT_CENTER,
-            format!(
-                "QUIZBOWL   •   {}   •   {}",
-                self.tossup.category.to_uppercase(),
-                self.tossup.difficulty.to_uppercase()
-            ),
-            theme::mono(11.0),
-            GOLD,
-        );
-        let bump = {
-            let e = (now - self.bump_start) as f32;
-            if e < 0.5 { (e / 0.5 * std::f32::consts::PI).sin() } else { 0.0 }
-        };
-        kit::score_chip(
-            ui,
-            Pos2::new(right, bar_cy),
-            &format!("Q{}", self.questions_done + 1),
-            &format!("{} pts", self.score),
-            bump,
-        );
-
-        // -- Footer region (pinned to bottom) ---------------------------------
-        let foot_bottom = screen.bottom() - 28.0 + ey;
-
-        // -- Question readout (.it-qb-readout), vertically centered -----------
-        let region_top = 24.0 + 30.0 + 18.0 + ey;
-        let region_bottom = foot_bottom - 165.0; // reserve room for the foot
-        let qfont = theme::spectral_medium(26.0);
-
-        let mut job = LayoutJob::default();
-        job.append(&revealed, 0.0, TextFormat { font_id: qfont.clone(), color: WHITE, ..Default::default() });
-        let show_remainder = matches!(self.state, TossupState::Result { .. });
-        if show_remainder && !remaining.is_empty() {
-            job.append(&remaining, 0.0, TextFormat {
-                font_id: qfont.clone(),
-                color: INK_DIM.gamma_multiply(0.55),
-                ..Default::default()
-            });
+        // -- Top bar: TOSSUP tag, category, points ----------------------------------------
+        let tag = kit::tag(&painter, &c, c.p(72.0, 44.0), &format!("TOSSUP {}", self.questions_done + 1), TagStyle::Gold, theme::TYPE_TAG);
+        let mut meta = self.tossup.category.to_uppercase();
+        if !self.tossup.difficulty.is_empty() {
+            meta = format!("{meta} · {}", self.tossup.difficulty.to_uppercase());
         }
-        job.wrap.max_width = content_w;
-        let galley = painter.layout_job(job);
-        let gh = galley.size().y;
-        let q_top = (region_top + region_bottom - gh) / 2.0;
-        painter.galley(Pos2::new(left, q_top), galley.clone(), WHITE);
+        kit::label(&painter, &c, Pos2::new(tag.right() + c.v(16.0), tag.center().y), Align2::LEFT_CENTER, &meta, MUTED);
+        // Points: what a buzz is worth (the real scoring, see game/scoring.rs).
+        let mut x = 1130.0;
+        for (text, fill, ink) in [("−5 EARLY MISS", PANEL, BAD), ("+10 CORRECT", GOLD, ON_GOLD)] {
+            let w = kit::text_width(&painter, text, c.cond(800, 15.0), 0.06) / c.s + 26.0;
+            x -= w;
+            let r = c.r(x, 44.0, w, 36.0);
+            painter.rect_filled(r, 0.0, fill);
+            kit::text_tracked(&painter, r.center(), Align2::CENTER_CENTER, text, c.cond(800, 15.0), ink, 0.06);
+            x -= 4.0;
+        }
 
-        // blinking caret while reading (.it-caret)
-        if matches!(self.state, TossupState::Reading) {
+        // -- Tossup text: read part in ink, a gold cursor bar; the rest only after the result.
+        let max_w = c.v(990.0);
+        let show_rest = matches!(self.state, TossupState::Result { .. } | TossupState::TimedOut);
+        let full_len = if show_rest { total_chars } else { self.chars_revealed };
+        let mut size = c.v(theme::TYPE_QB_TEXT);
+        let measure = |sz: f32| {
+            let mut job = LayoutJob::default();
+            job.wrap.max_width = max_w;
+            let all: String = self.tossup.question.chars().take(full_len.max(1)).collect();
+            job.append(&all, 0.0, TextFormat { font_id: theme::barlow(500, sz), line_height: Some(sz * 1.38), ..Default::default() });
+            painter.layout_job(job).size().y
+        };
+        // Shrink long tossups so the whole question fits above the buzzer.
+        let full_h = {
+            let mut job = LayoutJob::default();
+            job.wrap.max_width = max_w;
+            job.append(&self.tossup.question, 0.0, TextFormat { font_id: theme::barlow(500, size), line_height: Some(size * 1.38), ..Default::default() });
+            painter.layout_job(job).size().y
+        };
+        if full_h > c.v(360.0) {
+            size *= (c.v(360.0) / full_h).sqrt().max(0.6);
+            while size > c.v(18.0) && measure(size) > c.v(360.0) {
+                size -= 1.0;
+            }
+        }
+        let mut job = LayoutJob::default();
+        job.wrap.max_width = max_w;
+        job.append(&revealed, 0.0, TextFormat { font_id: theme::barlow(500, size), color: INK, line_height: Some(size * 1.38), ..Default::default() });
+        if show_rest && !remaining.is_empty() {
+            job.append(&remaining, 0.0, TextFormat { font_id: theme::barlow(500, size), color: theme::alpha(MUTED, 0.45), line_height: Some(size * 1.38), ..Default::default() });
+        }
+        let galley = painter.layout_job(job);
+        let top = c.p(72.0, 130.0);
+        painter.galley(top, galley.clone(), INK);
+        if matches!(self.state, TossupState::Reading | TossupState::FinishedReading { .. } | TossupState::BuzzedIn { .. }) {
             if let Some(row) = galley.rows.last() {
-                let cx = left + row.rect.right() + 3.0;
-                let cy = q_top + row.rect.center().y;
-                let half = qfont.size * 0.55;
-                if now.fract() < 0.5 {
-                    painter.rect_filled(
-                        Rect::from_center_size(Pos2::new(cx + 1.5, cy), Vec2::new(3.0, half * 2.0)),
-                        Rounding::ZERO,
-                        GOLD,
-                    );
-                }
-                ui.ctx().request_repaint();
+                let x = top.x + row.rect.right() + c.v(4.0);
+                let cy = top.y + row.rect.center().y;
+                painter.rect_filled(Rect::from_center_size(Pos2::new(x, cy), Vec2::new(c.v(4.0), size * 1.05)), 0.0, GOLD);
             }
         }
 
-        // -- Footer content per phase -----------------------------------------
+        // -- Footer per phase -----------------------------------------------------------------
         let mut buzz = false;
         let mut submitted: Option<String> = None;
         let mut next = false;
         let mut bonus = false;
+        let words_left = remaining.split_whitespace().count();
 
         match self.state {
             TossupState::Reading | TossupState::FinishedReading { .. } => {
-                // Buzz button (.it-buzz) left-aligned with hint, at the bottom.
-                let label = "BUZZ IN";
-                let lab_w = painter.layout_no_wrap(label.into(), theme::spectral(18.0), ON_ACCENT).size().x;
-                let key_w = 52.0;
-                let bw = 30.0 + lab_w + 14.0 + key_w + 30.0;
-                let bh = 50.0;
-                let pulse = {
-                    let s = ((now as f32) / 2.2 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2).sin();
-                    0.5 + 0.5 * s
+                let br = c.r(72.0, 540.0, 278.0, 104.0);
+                let resp = ui.interact(br, Id::new("qb_buzz"), Sense::click());
+                let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+                kit::poly(&painter, kit::pattern_a(br, c.v(16.0)), kit::lerp_color(GOLD, theme::GOLD_HI, hover), Stroke::NONE);
+                painter.text(Pos2::new(br.left() + c.v(44.0), br.center().y), Align2::LEFT_CENTER, "BUZZ", c.cond(800, 50.0), ON_GOLD);
+                let key = c.r(242.0, 578.0, 64.0, 28.0);
+                painter.rect_filled(key, 0.0, theme::alpha(ON_GOLD, 0.2));
+                kit::text_tracked(&painter, key.center(), Align2::CENTER_CENTER, "SPACE", c.cond(700, 13.0), ON_GOLD, 0.14);
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                kit::label(&painter, &c, c.p(374.0, 574.0), Align2::LEFT_CENTER, if words_left > 0 { "STILL TO READ" } else { "BUZZ BEFORE TIME RUNS OUT" }, MUTED);
+                let left_text = if words_left > 0 {
+                    format!("{words_left} WORD{}", if words_left == 1 { "" } else { "S" })
+                } else if let TossupState::FinishedReading { elapsed } = self.state {
+                    format!("{}S", (5.0 - elapsed).ceil().max(0.0) as i32)
+                } else {
+                    String::new()
                 };
-                let lift = -2.0 * pulse;
-                let brect = Rect::from_min_size(Pos2::new(left, foot_bottom - bh), Vec2::new(bw, bh))
-                    .translate(Vec2::new(0.0, lift));
-                let resp = ui.interact(brect, Id::new("qb_buzz"), Sense::click());
-                // glow
-                painter.rect_filled(
-                    brect.expand(6.0 * pulse),
-                    Rounding::same(14.0),
-                    ACCENT_SOFT.gamma_multiply(0.5 * pulse),
-                );
-                painter.rect_filled(brect, Rounding::same(14.0), GOLD);
-                painter.text(
-                    Pos2::new(brect.left() + 30.0, brect.center().y),
-                    Align2::LEFT_CENTER,
-                    label,
-                    theme::spectral(18.0),
-                    ON_ACCENT,
-                );
-                let key = Rect::from_center_size(
-                    Pos2::new(brect.right() - 30.0 - key_w / 2.0, brect.center().y),
-                    Vec2::new(key_w, 22.0),
-                );
-                painter.rect_filled(key, Rounding::same(5.0), Color32::from_rgba_premultiplied(0, 0, 0, 46));
-                painter.text(key.center(), Align2::CENTER_CENTER, "SPACE", theme::mono(10.0), ON_ACCENT);
-
-                // hint (.it-turn)
-                painter.text(
-                    Pos2::new(brect.right() + 16.0, foot_bottom - bh / 2.0),
-                    Align2::LEFT_CENTER,
-                    "read until you're sure — earlier = more points",
-                    theme::mono(11.0),
-                    INK_DIM,
-                );
-                ui.ctx().request_repaint();
-                if resp.clicked() || ui.input(|i| i.key_pressed(egui::Key::Space)) {
+                painter.text(c.p(374.0, 606.0), Align2::LEFT_CENTER, left_text, c.cond(800, 30.0), INK);
+                if resp.clicked() || ui.input(|i| i.key_pressed(Key::Space)) {
                     buzz = true;
                 }
             }
 
             TossupState::BuzzedIn { ref mut answer_input } => {
-                // If a phone player buzzed, show their name and wait for their answer
-                if let Some(ref name) = self.mp_buzzed_name {
-                    painter.text(
-                        Pos2::new(left, foot_bottom - 60.0),
-                        Align2::LEFT_CENTER,
-                        format!("{} is answering on their phone…", name),
-                        theme::plex_medium(15.0),
-                        GOLD,
-                    );
-                    ui.ctx().request_repaint();
-                    // Fall through so the match arm ends — no local input shown
-                    let _ = answer_input;
-                    return None; // early return: wait for phone answer via App
-                }
-                // .it-prompt "Answer" + input row, then Submit
-                let row_y = foot_bottom - 90.0;
-                painter.text(
-                    Pos2::new(left, row_y + 21.0),
-                    Align2::LEFT_CENTER,
-                    "Answer",
-                    theme::mono(12.0),
-                    GOLD,
-                );
-                let prompt_w = painter.layout_no_wrap("Answer".into(), theme::mono(12.0), GOLD).size().x;
-                let field = Rect::from_min_size(
-                    Pos2::new(left + prompt_w + 14.0, row_y),
-                    Vec2::new(360.0, 42.0),
-                );
-                let mut child =
-                    ui.new_child(egui::UiBuilder::new().max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center)));
-                let resp = child.add(
-                    egui::TextEdit::singleline(answer_input)
-                        .desired_width(360.0)
-                        .font(theme::mono(17.0))
-                        .margin(egui::Margin::symmetric(14.0, 11.0))
-                        .text_color(WHITE),
-                );
-                if self.focus_answer {
-                    resp.request_focus();
+                if let Some(name) = &self.mp_buzzed_name {
+                    kit::label(&painter, &c, c.p(72.0, 556.0), Align2::LEFT_CENTER, "BUZZED IN", GOLD);
+                    painter.text(c.p(72.0, 596.0), Align2::LEFT_CENTER, format!("{} IS ANSWERING ON THEIR PHONE", name.to_uppercase()), c.cond(800, 36.0), INK);
+                } else {
+                    kit::label(&painter, &c, c.p(72.0, 532.0), Align2::LEFT_CENTER, "YOUR ANSWER", MUTED);
+                    let mut go = kit::answer_field(ui, c.r(72.0, 548.0, 480.0, 64.0), answer_input, self.focus_answer, c.v(30.0));
                     self.focus_answer = false;
-                }
-                let mut go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-                let bsz = painter.layout_no_wrap("Submit".into(), theme::plex_semibold(14.0), WHITE).size()
-                    + Vec2::new(44.0, 24.0);
-                let brect = Rect::from_min_size(Pos2::new(left, foot_bottom - bsz.y), bsz);
-                let mut bchild =
-                    ui.new_child(egui::UiBuilder::new().max_rect(brect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-                if kit::primary_button(&mut bchild, "Submit").clicked() {
-                    go = true;
-                }
-                if go {
-                    // Allow submitting an empty answer (counts as incorrect).
-                    submitted = Some(answer_input.clone());
+                    let sb = c.r(560.0, 548.0, 150.0, 64.0);
+                    go |= kit::button(ui, &c, sb, "SUBMIT", Btn::Primary, "qb_submit").clicked();
+                    kit::key_hint(&painter, &c, Pos2::new(sb.right() + c.v(12.0), sb.center().y), Align2::LEFT_CENTER, "ENTER ↵");
+                    if go {
+                        // An empty answer counts as incorrect.
+                        submitted = Some(answer_input.clone());
+                    }
                 }
             }
 
             TossupState::TimedOut => {
-                next = self.draw_verdict(&painter, ui, left, foot_bottom, ey, "TIME", RED_WRONG, None, "Next tossup →");
+                next = self.verdict(ui, &c, "TIME", BAD, ON_BAD, None, "NEXT TOSSUP");
             }
 
             TossupState::Result { correct, score_delta } => {
-                let (label, color) = if correct {
-                    ("CORRECT", GREEN_CORRECT)
-                } else {
-                    ("INCORRECT", RED_WRONG)
-                };
+                let (word, fill, ink) = if correct { ("CORRECT", GOOD, ON_GOOD) } else { ("WRONG", BAD, ON_BAD) };
                 // A correct tossup earns a bonus round; a miss goes to the next tossup.
-                let btn = if correct { "Bonus round →" } else { "Next tossup →" };
-                let clicked =
-                    self.draw_verdict(&painter, ui, left, foot_bottom, ey, label, color, Some(score_delta), btn);
-                if clicked {
+                let btn = if correct { "BONUS ROUND" } else { "NEXT TOSSUP" };
+                if self.verdict(ui, &c, word, fill, ink, Some(score_delta), btn) {
                     if correct { bonus = true } else { next = true }
                 }
             }
         }
 
-        // -- Apply transitions -------------------------------------------------
+        // -- Roster -------------------------------------------------------------------------------
+        let reading = matches!(self.state, TossupState::Reading | TossupState::FinishedReading { .. });
+        if self.phones.is_empty() {
+            let mut e = RosterEntry::new("You", self.score);
+            e.status = Some(if reading { "READY" } else if matches!(self.state, TossupState::BuzzedIn { .. }) { "BUZZED" } else { "" });
+            if let TossupState::Result { score_delta, .. } = self.state {
+                e.delta = Some(score_delta);
+            }
+            kit::roster(ui, &c, 72.0, 372.0, 772.0, &[e], None, false);
+        } else {
+            let buzzed = self.mp_buzzed_name.clone();
+            let active = buzzed.as_ref().and_then(|b| self.phones.iter().position(|(n, _)| n == b));
+            let entries: Vec<RosterEntry> = self
+                .phones
+                .iter()
+                .map(|(n, s)| {
+                    let mut e = RosterEntry::new(n, *s);
+                    e.status = Some(match &buzzed {
+                        Some(b) if b == n => "BUZZED",
+                        Some(_) => "LOCKED OUT",
+                        None if reading => "READY",
+                        None => "",
+                    });
+                    e
+                })
+                .collect();
+            let w = (entries.len() as f32 * 372.0 + (entries.len() as f32 - 1.0) * 12.0).min(1136.0);
+            kit::roster(ui, &c, 72.0, w, 772.0, &entries, active, active.is_some());
+        }
+
+        // -- Apply transitions ----------------------------------------------------------------------
         let mut action = None;
         if buzz {
             self.state = TossupState::BuzzedIn { answer_input: String::new() };
@@ -375,83 +308,28 @@ impl TossupScreen {
         } else if next {
             action = Some(TossupAction::Next);
         }
-
         action
     }
 
-    /// Result / timeout footer: verdict label + points pop + "Answer" reveal +
-    /// Next button, left-aligned and bottom-pinned. Returns whether Next clicked.
+    /// Verdict band + answer + advance button. Returns true when advanced.
     #[allow(clippy::too_many_arguments)]
-    fn draw_verdict(
-        &self,
-        painter: &egui::Painter,
-        ui: &mut egui::Ui,
-        left: f32,
-        foot_bottom: f32,
-        _ey: f32,
-        label: &str,
-        color: Color32,
-        delta: Option<i32>,
-        button_label: &str,
-    ) -> bool {
-        let now = ui.input(|i| i.time);
-        let t = (((now - self.result_start) / 0.5).clamp(0.0, 1.0)) as f32;
-        let pop = 1.0 - (1.0 - t).powi(3); // ease-out
-
-        // Layout: verdict row at top of a taller footer block so the answer
-        // reveal has clear separation from the Next button below it.
-        let block_top = foot_bottom - 150.0;
-
-        // verdict label (.it-verdict-label fontSize 30) with pop scale
-        let vfont = theme::spectral(30.0 * (0.5 + 0.5 * pop));
-        painter.text(
-            Pos2::new(left, block_top + 18.0),
-            Align2::LEFT_CENTER,
-            label,
-            vfont,
-            color,
-        );
-        let vw = painter
-            .layout_no_wrap(label.into(), theme::spectral(30.0), color)
-            .size()
-            .x;
-
-        // points pop (.it-pop) slide up + fade
-        if let Some(d) = delta {
-            let dy = (1.0 - pop) * 18.0;
-            let txt = if d >= 0 { format!("+{}", d) } else { d.to_string() };
-            painter.text(
-                Pos2::new(left + vw + 16.0, block_top + 18.0 + dy),
-                Align2::LEFT_CENTER,
-                txt,
-                theme::mono_semibold(22.0),
-                color.gamma_multiply(pop),
-            );
+    fn verdict(&self, ui: &mut egui::Ui, c: &Canvas, word: &str, fill: egui::Color32, ink: egui::Color32, delta: Option<i32>, next: &str) -> bool {
+        let painter = ui.painter().clone();
+        let t = kit::ease_out(kit::since(ui, self.result_start, 0.3) / 0.3);
+        let band = c.r(72.0, 540.0, 500.0, 92.0);
+        let band = Rect::from_center_size(band.center(), Vec2::new(band.width(), band.height() * t.max(0.02)));
+        kit::poly(&painter, kit::pattern_a(band, c.v(theme::CHAMFER_MD)), fill, Stroke::NONE);
+        if t > 0.6 {
+            painter.text(Pos2::new(band.left() + c.v(24.0), band.center().y), Align2::LEFT_CENTER, word, c.cond(800, 54.0), ink);
+            if let Some(d) = delta {
+                let txt = if d >= 0 { format!("+{d}") } else { format!("−{}", -d) };
+                painter.text(Pos2::new(band.right() - c.v(24.0), band.center().y), Align2::RIGHT_CENTER, txt, c.cond(800, 40.0), ink);
+            }
         }
-
-        // answer reveal (.it-answer-reveal / .it-answer-pre)
-        painter.text(
-            Pos2::new(left, block_top + 52.0),
-            Align2::LEFT_CENTER,
-            "ANSWER",
-            theme::mono(11.0),
-            INK_DIM,
-        );
-        painter.text(
-            Pos2::new(left, block_top + 74.0),
-            Align2::LEFT_CENTER,
-            &self.tossup.answer,
-            theme::spectral(22.0),
-            WHITE,
-        );
-
-        // Advance button, left-aligned at the bottom
-        let bsz = painter
-            .layout_no_wrap(button_label.into(), theme::plex_semibold(14.0), WHITE)
-            .size()
-            + Vec2::new(44.0, 24.0);
-        let brect = Rect::from_min_size(Pos2::new(left, foot_bottom - bsz.y), bsz);
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(brect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        kit::primary_button(&mut child, button_label).clicked()
+        kit::label(&painter, c, c.p(596.0, 550.0), Align2::LEFT_CENTER, "ANSWER", MUTED);
+        kit::wrapped(&painter, c.p(596.0, 564.0), &self.tossup.answer.to_uppercase(), c.cond(800, 28.0), INK, c.v(400.0), c.v(30.0));
+        let br = c.r(1016.0, 540.0, 192.0, 64.0);
+        kit::key_hint(&painter, c, Pos2::new(br.right(), br.bottom() + c.v(16.0)), Align2::RIGHT_CENTER, "ENTER ↵");
+        kit::button(ui, c, br, next, Btn::Primary, "qb_next").clicked() || ui.input(|i| i.key_pressed(Key::Enter))
     }
 }

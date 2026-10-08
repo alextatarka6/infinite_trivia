@@ -1,80 +1,100 @@
 # Infinite Trivia — design tokens (single source of truth).
 #
-# Extracted from the React prototype's studio.css (:root) and component classes
-# (the prototype lives in the gitignored design/ folder).
+# "Roster" direction: esports-broadcast overlay in a Jackbox-style show frame.
+# Flat fills only (no gradients, glows or rounded corners); shapes are chamfered
+# polygons and slants. Reference: design/roster/Roster Hi-fi.dc.html (gitignored),
+# drawn at 1280×800 — every size below is in that canvas space and scaled to
+# the window at runtime (see kit::Canvas).
+#
 # build.rs reads this file and generates compile-time constants in
-# $OUT_DIR/design_tokens.rs, which src/theme.rs includes to build the egui
-# Style / Visuals. Edit values here, not in theme.rs.
+# $OUT_DIR/design_tokens.rs, which src/theme.rs includes. Edit values here,
+# not in theme.rs. The phone controller (assets/phone.html) mirrors the colors.
 
 # ---------------------------------------------------------------------------
 # Solid colors  (hex -> Color32::from_rgb).  Comment = the theme.rs const name.
 # ---------------------------------------------------------------------------
 [color]
-bg          = "#0a1140"   # BLUE_BG       — window / panel background
-bg_2        = "#0d1657"   # BLUE_MID      — raised panels, cards, chips
-tile_top    = "#1a2f96"   # BLUE_DARK     — Jeopardy tile fill (gradient top)
-tile_bottom = "#0f1c69"   # TILE_BOTTOM   — tile gradient bottom
-tile_flat   = "#13256f"   # TILE_FLAT     — flat tile fill
-ink         = "#f7f5ee"   # WHITE         — primary text
-ink_dim     = "#aab3e4"   # INK_DIM       — secondary / muted text
-accent      = "#f4b63f"   # GOLD          — primary accent
-accent_2    = "#ffd884"   # GOLD_HOVER    — accent hover / highlight
-good        = "#5ec98a"   # GREEN_CORRECT — correct answer
-bad         = "#e8627a"   # RED_WRONG     — wrong answer
-on_accent   = "#1a1304"   # ON_ACCENT     — ink used on top of the gold accent
-body_bg     = "#05081f"   # BODY_BG       — deepest backdrop (outside the frame)
-app_top     = "#16236c"   # APP_TOP       — radial backdrop stop (top)
-app_mid     = "#0a1140"   # APP_MID       — radial backdrop stop (mid)
-app_bottom  = "#070c30"   # APP_BOTTOM    — radial backdrop stop (bottom)
+bg       = "#0a1140"   # BG        — screen background
+panel    = "#0d1657"   # PANEL     — cards, segments, roster cards
+panel_hi = "#13256f"   # PANEL_HI  — live board tiles, photo plates, inactive progress
+gold     = "#f4b63f"   # GOLD      — accent, selected state, active team, primary buttons
+gold_hi  = "#ffd884"   # GOLD_HI   — gold hover / pressed
+on_gold  = "#1a1304"   # ON_GOLD   — text and icons on gold
+ink      = "#f7f5ee"   # INK       — primary text
+muted    = "#aab3e4"   # MUTED     — labels, secondary text
+good     = "#5ec98a"   # GOOD      — correct
+on_good  = "#0c1a10"   # ON_GOOD   — text on good
+bad      = "#e8627a"   # BAD       — wrong, negative scores
+on_bad   = "#2a0c11"   # ON_BAD    — text on bad
 
 # ---------------------------------------------------------------------------
 # Alpha-composited colors.  base color + alpha -> premultiplied Color32.
 # ---------------------------------------------------------------------------
 [color_alpha]
-accent_soft = { base = "#f4b63f", alpha = 0.30 }  # ACCENT_SOFT
-line        = { base = "#aab3e4", alpha = 0.18 }  # LINE
-correct_bg  = { base = "#5ec98a", alpha = 0.16 }  # CORRECT_BG
-wrong_bg    = { base = "#e8627a", alpha = 0.14 }  # WRONG_BG
+line = { base = "#aab3e4", alpha = 0.18 }   # LINE — hairline dividers
 
 # ---------------------------------------------------------------------------
-# Corner radii (px)  ->  RADIUS_*
+# Design canvas (px) -> CANVAS_*. Screens are laid out in this space.
 # ---------------------------------------------------------------------------
-[radius]
-card  = 14.0    # --radius        cards, overlays
-tile  = 10.0    # --tile-radius   board tiles, options
-frame = 18.0    # app window frame
-input = 12.0    # text inputs
-pill  = 999.0   # fully-rounded pills / buttons / chips
+[canvas]
+w = 1280.0
+h = 800.0
 
 # ---------------------------------------------------------------------------
-# Spacing (px)  ->  SPACE_*
+# Shape (px) -> CHAMFER_* / SLANT_*. No rounded corners anywhere (icon aside).
+#   Chamfer pattern A = top-left + bottom-right (buttons, tiles, photo plates)
+#   Chamfer pattern B = bottom-right only (roster / team cards)
+# ---------------------------------------------------------------------------
+[chamfer]
+sm = 6.0    # chips, segments
+md = 10.0   # tiles, buttons, photo plates
+lg = 14.0   # roster cards
+
+[slant]
+card = 24.0   # Home mode cards (parallelogram offset)
+tag  = 11.0   # tag labels: ROUND 1, $800, TOSSUP 7
+
+# ---------------------------------------------------------------------------
+# Mode textures: line pitch (px) and alpha of MUTED. -> TEXTURE_*
+# The same textures sit behind each mode's question screen at `screen_alpha`.
+# ---------------------------------------------------------------------------
+[texture]
+grid_pitch    = 28.0   # Jeopardy — square grid
+grid_alpha    = 0.10
+hatch_pitch   = 12.0   # General Trivia — 45° hatch
+hatch_alpha   = 0.09
+scan_pitch    = 7.0    # Quizbowl — horizontal scanlines
+scan_alpha    = 0.10
+checker_pitch = 28.0   # Mix — checker
+checker_alpha = 0.07
+screen_alpha  = 0.05   # full-screen background version
+
+# ---------------------------------------------------------------------------
+# Spacing (px) -> SPACE_*
 # ---------------------------------------------------------------------------
 [spacing]
-item     = 8.0    # default egui item spacing
-button_x = 22.0   # button horizontal padding (.it-btn)
-button_y = 12.0   # button vertical padding
-gap      = 18.0   # mode-card row gap (.it-modes)
-section  = 42.0   # major vertical rhythm (.it-home gap)
+item   = 8.0    # default egui item spacing
+gutter = 48.0   # screen edge margin (Home, top bars)
+gap    = 6.0    # board grid / roster card gap
+seg    = 4.0    # segmented-control gap
 
 # ---------------------------------------------------------------------------
-# Type scale (px)  ->  TYPE_*.  Families are loaded by file in src/app.rs.
+# Type scale (px) -> TYPE_*.  Families are loaded by file in src/app.rs:
+#   Barlow Condensed 500/600/700/800 — headlines, numbers, labels, buttons (caps)
+#   Barlow 400/500/600               — body, descriptions, tossup text
 # ---------------------------------------------------------------------------
-[font.family]
-serif = "Spectral"        # display / headings / clue text
-sans  = "IBM Plex Sans"   # UI / body / options
-mono  = "IBM Plex Mono"   # numerals, values, tags, kickers
-
 [type]
-wordmark_kicker = 30.0   # .it-wm-1   INFINITE
-wordmark_title  = 92.0   # .it-wm-2   TRIVIA
-mode_name       = 24.0   # .it-mode-name
-heading         = 30.0   # .it-round  round titles
-subheading      = 20.0
-body            = 16.0   # .it-opt body text
-dollar          = 26.0   # .it-tile span  board values
-clue            = 32.0   # .it-clue-q
-trivia_q        = 27.0   # .it-trivia-q
-qb_text         = 26.0   # .it-qb-text
-score_value     = 14.0   # .it-score-chip b
-kicker          = 11.0   # .it-home-foot, mono kickers
-chip_label      = 10.5   # .it-score-chip
+wordmark   = 34.0    # INFINITE TRIVIA
+mode_hero  = 104.0   # selected Home mode name
+mode_name  = 46.0    # unselected Home mode name
+label      = 12.0    # tracked caps labels (DIFFICULTY, ON THE COUCH)
+segment    = 15.0    # segmented control
+button     = 22.0    # primary / secondary buttons
+tag        = 16.0    # slanted tags
+clue       = 56.0    # Jeopardy clue / trivia question
+qb_text    = 34.0    # tossup reading text
+tile_value = 40.0    # board $ values
+category   = 15.0    # board category headers
+score      = 52.0    # roster score (inactive)
+score_hi   = 72.0    # roster score (active)
+body       = 18.0    # descriptions

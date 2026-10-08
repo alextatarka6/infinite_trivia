@@ -1,8 +1,10 @@
-use egui::{Align2, Pos2, Rect, Vec2};
+//! Jeopardy clue — "03 Clue" in the Roster hi-fi.
+
+use egui::{Align2, Key, Pos2, Rect, Stroke, Vec2};
 use crate::api::jeopardy::{check_answer, Clue};
 use crate::screens::jeopardy::board::money;
-use crate::screens::kit;
-use crate::theme::{self, GREEN_CORRECT, INK_DIM, RED_WRONG};
+use crate::screens::kit::{self, Btn, Canvas, RosterEntry, TagStyle, Texture};
+use crate::theme::{self, GOOD, INK, MUTED, ON_BAD, ON_GOOD, BAD};
 
 #[derive(Default)]
 pub enum ClueState {
@@ -16,6 +18,11 @@ pub struct ClueScreen {
     pub input: String,
     pub state: ClueState,
     pub next_label: &'static str,
+    /// Teams + the one answering, copied from the board by App for the roster row.
+    pub teams: Vec<(String, i32)>,
+    pub active: usize,
+    /// Format roster scores as dollars (false in Mix, which totals points).
+    pub money_scores: bool,
     enter_start: f64,
     result_start: f64,
     focus_input: bool,
@@ -31,7 +38,10 @@ impl ClueScreen {
             clue,
             input: String::new(),
             state: ClueState::default(),
-            next_label: "Back to board →",
+            next_label: "Back to board",
+            teams: Vec::new(),
+            active: 0,
+            money_scores: true,
             enter_start: -1.0,
             result_start: -10.0,
             focus_input: true,
@@ -39,71 +49,100 @@ impl ClueScreen {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<ClueAction> {
-        kit::ambient(ui.ctx());
+        kit::backdrop(ui.ctx(), Some(Texture::Grid));
+        let c = Canvas::new(ui.ctx());
         let now = ui.input(|i| i.time);
         if self.enter_start < 0.0 {
             self.enter_start = now;
         }
-        let ey = kit::enter_offset(ui, self.enter_start);
-
-        let avail = ui.available_size();
-        let cx = avail.x / 2.0;
         let painter = ui.painter().clone();
         let mut action = None;
 
-        let mut y = ((avail.y - 360.0) / 2.0).max(40.0) + ey;
+        // -- Tags: category + value ----------------------------------------------
+        let cat = kit::tag(&painter, &c, c.p(80.0, 72.0), &self.clue.category.to_uppercase(), TagStyle::Panel, theme::TYPE_TAG);
+        kit::tag(&painter, &c, Pos2::new(cat.right() - c.v(theme::SLANT_TAG), cat.top()), &money(self.clue.value), TagStyle::Gold, 20.0);
 
-        // -- Meta (.it-clue-meta) ---------------------------------------------
-        let cat = self.clue.category.to_uppercase();
-        let val = money(self.clue.value);
-        let cat_w = painter.layout_no_wrap(cat.clone(), theme::mono(12.0), INK_DIM).size().x;
-        let val_w = painter.layout_no_wrap(val.clone(), theme::mono(14.0), INK_DIM).size().x;
-        let total = cat_w + 14.0 + val_w;
-        let left = cx - total / 2.0;
-        painter.text(Pos2::new(left, y), Align2::LEFT_CENTER, &cat, theme::mono(12.0), theme::GOLD);
-        painter.text(Pos2::new(left + cat_w + 14.0, y), Align2::LEFT_CENTER, &val, theme::mono(14.0), INK_DIM);
-        y += 28.0;
+        // -- Clue -------------------------------------------------------------------------
+        let q = self.clue.question.to_uppercase();
+        let max_w = c.v(900.0);
+        let size = kit::fit_size(&painter, &q, 600, c.v(theme::TYPE_CLUE), c.v(30.0), max_w, c.v(220.0), 1.15);
+        kit::wrapped(&painter, c.p(80.0, 150.0), &q, theme::cond(600, size), INK, max_w, size * 1.15);
 
-        // -- Question (.it-clue-q) --------------------------------------------
-        let qh = kit::centered_question(ui, cx, y, &self.clue.question, 32.0, 720.0_f32.min(avail.x - 80.0));
-        y += qh + 30.0;
-
+        let row_y = 430.0;
         match self.state {
             ClueState::ShowQuestion => {
-                if kit::input_row(ui, cx, y + 21.0, "What is", &mut self.input, 340.0, self.focus_input) {
-                    self.answer(now);
-                }
+                // Typed response (solo / host keyboard).
+                kit::label(&painter, &c, c.p(80.0, row_y - 18.0), Align2::LEFT_CENTER, "YOUR RESPONSE", MUTED);
+                let field = c.r(80.0, row_y, 480.0, 58.0);
+                let submitted = kit::answer_field(ui, field, &mut self.input, self.focus_input, c.v(28.0));
                 self.focus_input = false;
-                y += 58.0;
-
-                // Submit (primary) + Reveal (ghost), centered pair
-                let pw = kit_measure(ui, "Submit") + 44.0;
-                let gw = kit_measure(ui, "Reveal") + 44.0;
-                let lp = cx - (pw + 14.0 + gw) / 2.0;
-                let pr = Rect::from_min_size(Pos2::new(lp, y), Vec2::new(pw, 42.0));
-                let gr = Rect::from_min_size(Pos2::new(lp + pw + 14.0, y), Vec2::new(gw, 42.0));
-                let mut pc = child(ui, pr);
-                if kit::primary_button(&mut pc, "Submit").clicked() {
+                let sb = c.r(568.0, row_y, 150.0, 58.0);
+                if submitted || kit::button(ui, &c, sb, "SUBMIT", Btn::Primary, "clue_submit").clicked() {
                     self.answer(now);
                 }
-                let mut gc = child(ui, gr);
-                if kit::ghost_button(&mut gc, "Reveal").clicked() {
-                    self.state = ClueState::Answered { correct: false };
+                kit::key_hint(&painter, &c, Pos2::new(sb.right() + c.v(12.0), sb.center().y), Align2::LEFT_CENTER, "ENTER ↵");
+
+                // Or the host judges an answer given out loud.
+                let jy = row_y + 96.0;
+                let l = kit::label(&painter, &c, c.p(80.0, jy + 21.0), Align2::LEFT_CENTER, "ANSWER OUT LOUD · HOST JUDGES", MUTED);
+                let x0 = (l.right() - c.origin.x) / c.s + 18.0;
+                let keys = !ui.ctx().wants_keyboard_input();
+                let ok = kit::button(ui, &c, c.r(x0, jy, 152.0, 42.0), "✓ CORRECT  C", Btn::Good, "clue_ok").clicked()
+                    || (keys && ui.input(|i| i.key_pressed(Key::C)));
+                let bad = kit::button(ui, &c, c.r(x0 + 168.0, jy, 138.0, 42.0), "✕ WRONG  X", Btn::Bad, "clue_bad").clicked()
+                    || (keys && ui.input(|i| i.key_pressed(Key::X)));
+                let reveal = kit::button(ui, &c, c.r(x0 + 322.0, jy, 110.0, 42.0), "REVEAL  R", Btn::Ghost, "clue_reveal").clicked()
+                    || (keys && ui.input(|i| i.key_pressed(Key::R)));
+                if ok || bad || reveal {
+                    self.state = ClueState::Answered { correct: ok };
                     self.result_start = now;
                 }
             }
 
             ClueState::Answered { correct } => {
-                let (label, color) = if correct { ("CORRECT", GREEN_CORRECT) } else { ("INCORRECT", RED_WRONG) };
-                let delta = if correct { Some(format!("+{}", money(self.clue.value))) } else { None };
-                kit::overlay_verdict(ui, cx, y + 22.0, self.result_start, label, color, delta);
-                y += 90.0;
-                kit::answer_reveal(ui, cx, y, "CORRECT RESPONSE", &self.clue.answer);
-                y += 58.0;
-                if kit::centered_primary(ui, cx, y, self.next_label) {
+                // Verdict band flips in (scaleY from the center line).
+                let t = kit::ease_out(kit::since(ui, self.result_start, 0.3) / 0.3);
+                let band = c.r(80.0, 390.0, 520.0, 76.0);
+                let band = Rect::from_center_size(band.center(), Vec2::new(band.width(), band.height() * t.max(0.02)));
+                let (fill, ink, word) = if correct { (GOOD, ON_GOOD, "CORRECT") } else { (BAD, ON_BAD, "WRONG") };
+                kit::poly(&painter, kit::pattern_a(band, c.v(theme::CHAMFER_MD)), fill, Stroke::NONE);
+                if t > 0.6 {
+                    painter.text(Pos2::new(band.left() + c.v(24.0), band.center().y), Align2::LEFT_CENTER, word, c.cond(800, 52.0), ink);
+                    let delta = if correct { format!("+{}", money(self.clue.value)) } else { format!("−{}", money(self.clue.value)) };
+                    painter.text(Pos2::new(band.right() - c.v(24.0), band.center().y), Align2::RIGHT_CENTER, delta, c.cond(800, 36.0), ink);
+                }
+                kit::label(&painter, &c, c.p(80.0, 488.0), Align2::LEFT_CENTER, "CORRECT RESPONSE", MUTED);
+                kit::wrapped(&painter, c.p(80.0, 500.0), &self.clue.answer.to_uppercase(), c.cond(800, 40.0), INK, c.v(700.0), c.v(42.0));
+                let label = self.next_label.trim_end_matches(" →").to_uppercase();
+                let size = kit::button_size(&painter, &c, &label, theme::TYPE_BUTTON, Vec2::new(24.0, 14.0));
+                let br = Rect::from_min_size(c.p(80.0, 556.0), size);
+                if kit::button(ui, &c, br, &label, Btn::Primary, "clue_next").clicked()
+                    || ui.input(|i| i.key_pressed(Key::Enter))
+                {
                     action = Some(ClueAction::Done { correct });
                 }
+                kit::key_hint(&painter, &c, Pos2::new(br.right() + c.v(12.0), br.center().y), Align2::LEFT_CENTER, "ENTER ↵");
             }
+        }
+
+        // -- Roster: the answering team is active; the rest dim. -----------------------
+        if !self.teams.is_empty() {
+            let note = if self.teams.len() > 1 { "ANSWERING" } else { "" };
+            let entries: Vec<RosterEntry> = self
+                .teams
+                .iter()
+                .enumerate()
+                .map(|(i, (n, s))| {
+                    let mut e = RosterEntry::new(n, *s);
+                    e.money = self.money_scores;
+                    if i == self.active && !note.is_empty() {
+                        e.note = Some(note.into());
+                    }
+                    e
+                })
+                .collect();
+            let w = (entries.len() as f32 * 400.0).min(1200.0);
+            kit::roster(ui, &c, 40.0, w, 772.0, &entries, Some(self.active), entries.len() > 1);
         }
 
         action
@@ -122,19 +161,4 @@ impl ClueScreen {
             self.answer(now);
         }
     }
-}
-
-fn kit_measure(ui: &egui::Ui, label: &str) -> f32 {
-    ui.painter()
-        .layout_no_wrap(label.to_string(), theme::plex_semibold(14.0), theme::WHITE)
-        .size()
-        .x
-}
-
-fn child(ui: &mut egui::Ui, rect: Rect) -> egui::Ui {
-    ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    )
 }

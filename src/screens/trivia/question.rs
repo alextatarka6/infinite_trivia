@@ -1,11 +1,10 @@
-use egui::{Align2, Color32, Id, Pos2, Rect, RichText, Rounding, Sense, Stroke, Vec2};
+//! General Trivia — "05 Trivia" in the Roster hi-fi.
+
+use egui::{Align2, Id, Key, Pos2, Rect, Sense, Stroke, Vec2};
 use crate::api::opentdb::TriviaQuestion;
 use crate::game::scoring::trivia_score;
-use crate::screens::kit::{self, SummaryAction};
-use crate::theme::{
-    self, BLUE_BG, BLUE_MID, CORRECT_BG, GOLD, GREEN_CORRECT, INK_DIM, LINE, RED_WRONG, WHITE,
-    WRONG_BG,
-};
+use crate::screens::kit::{self, Btn, Canvas, RosterEntry, SummaryAction, Texture};
+use crate::theme::{self, BAD, GOLD, GOOD, INK, MUTED, ON_BAD, ON_GOOD, PANEL, PANEL_HI};
 
 pub enum TriviaAction {
     Next { score_delta: i32 },
@@ -25,6 +24,9 @@ pub struct TriviaScreen {
     pub timer_max: f32,
     pub loading: bool,
     pub error: Option<String>,
+    /// Phone players' (name, score), set by App during a phone game so the
+    /// roster shows the couch instead of a lone YOU card.
+    pub phones: Vec<(String, i32)>,
     // animation bookkeeping
     anim_idx: i64,
     enter_start: f64,
@@ -46,6 +48,7 @@ impl TriviaScreen {
             timer_max: 20.0,
             loading: false,
             error: None,
+            phones: Vec::new(),
             anim_idx: -1,
             enter_start: 0.0,
             select_start: 0.0,
@@ -66,72 +69,39 @@ impl TriviaScreen {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, dt: f32) -> Option<TriviaAction> {
-        kit::ambient(ui.ctx());
+        kit::backdrop(ui.ctx(), Some(Texture::Hatch));
 
-        // -- Loading ----------------------------------------------------------
         if self.loading {
-            kit::loader(ui, "Pulling fresh questions…");
+            kit::loading(ui, "PULLING 10 QUESTIONS", "GENERAL TRIVIA · OPEN TRIVIA DB", None);
             return None;
         }
-
-        // -- Error ------------------------------------------------------------
         if let Some(err) = self.error.clone() {
-            let mut action = None;
-            let avail = ui.available_size();
-            ui.add_space((avail.y - 120.0).max(16.0) / 2.0);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    RichText::new("Could not fetch questions")
-                        .font(theme::spectral(26.0))
-                        .color(RED_WRONG),
-                );
-                ui.add_space(8.0);
-                ui.label(RichText::new(&err).font(theme::plex(14.0)).color(INK_DIM));
-                ui.add_space(18.0);
-                if kit::primary_button(ui, "Back to menu").clicked() {
-                    action = Some(TriviaAction::Quit);
-                }
-            });
-            return action;
+            return error_screen(ui, "COULD NOT FETCH QUESTIONS", &err).then_some(TriviaAction::Quit);
         }
 
         let now = ui.input(|i| i.time);
-
-        // Reset the enter animation whenever the visible "view" changes.
         if self.anim_idx != self.current_idx as i64 {
             self.anim_idx = self.current_idx as i64;
             self.enter_start = now;
         }
 
-        // -- Round complete (Summary) -----------------------------------------
+        // -- Round complete ---------------------------------------------------------
         if self.current_idx >= self.questions.len() && !self.questions.is_empty() {
-            if kit::quit_button(ui) {
-                return Some(TriviaAction::Quit);
-            }
-            let misses = self.questions.len() as u32 - self.correct_count;
+            let misses = (self.questions.len() as u32).saturating_sub(self.correct_count);
             let stats = [
-                kit::Stat { value: self.correct_count.to_string(), label: "correct" },
+                kit::Stat { value: format!("{}/{}", self.correct_count, self.questions.len()), label: "correct" },
                 kit::Stat { value: misses.to_string(), label: "misses" },
                 kit::Stat { value: format!("×{}", self.best_streak), label: "best streak" },
             ];
-            return match kit::summary(
-                ui,
-                "ROUND COMPLETE",
-                &self.score.to_string(),
-                "FINAL SCORE",
-                &stats,
-                self.enter_start,
-            ) {
+            return match kit::summary(ui, "General Trivia", &self.score.to_string(), "", &stats, self.enter_start) {
                 SummaryAction::Restart => Some(TriviaAction::Restart),
                 SummaryAction::Quit => Some(TriviaAction::Quit),
                 SummaryAction::None => None,
             };
         }
-
         if self.questions.is_empty() {
             return None;
         }
-
         if kit::quit_button(ui) {
             return Some(TriviaAction::Quit);
         }
@@ -147,215 +117,83 @@ impl TriviaScreen {
             }
         }
 
+        let c = Canvas::new(ui.ctx());
+        let painter = ui.painter().clone();
         let q = &self.questions[self.current_idx];
         let answers = q.shuffled_answers();
+        let enter = kit::ease_out(kit::since(ui, self.enter_start, 0.4) / 0.4);
+        let ey = c.v(12.0) * (1.0 - enter);
 
-        // -- Geometry: a centered content column, .it-trivia padding 0 44 ------
-        let screen = ui.ctx().screen_rect();
-        let avail_w = ui.available_width();
-        let content_w = (avail_w - 88.0).min(900.0).max(420.0);
-        let left = (avail_w - content_w) / 2.0;
-        let right = left + content_w;
-        let ey = kit::enter_offset(ui, self.enter_start);
-        let painter = ui.painter().clone();
-
-        // -- Top bar (.it-trivia-bar) -----------------------------------------
-        let mut y = 30.0 + ey;
-        let bar_h = 30.0;
-        painter.text(
-            Pos2::new(left, y + bar_h / 2.0),
-            Align2::LEFT_CENTER,
-            format!("Q {}/{}", self.current_idx + 1, self.questions.len()),
-            theme::mono(12.0),
-            INK_DIM,
-        );
-        let qn = ui
-            .painter()
-            .layout_no_wrap(
-                format!("Q {}/{}", self.current_idx + 1, self.questions.len()),
-                theme::mono(12.0),
-                INK_DIM,
-            )
-            .size()
-            .x;
-        painter.text(
-            Pos2::new(left + qn + 8.0, y + bar_h / 2.0),
-            Align2::LEFT_CENTER,
-            "•",
-            theme::mono(12.0),
-            INK_DIM.gamma_multiply(0.5),
-        );
-        painter.text(
-            Pos2::new(left + qn + 22.0, y + bar_h / 2.0),
-            Align2::LEFT_CENTER,
-            &q.category,
-            theme::mono(12.0),
-            INK_DIM,
-        );
-
-        // Score chip (right), with bump
-        let bump = {
-            let e = (now - self.bump_start) as f32;
-            if e < 0.5 { (e / 0.5 * std::f32::consts::PI).sin() } else { 0.0 }
-        };
-        kit::score_chip(
-            ui,
-            Pos2::new(right, y + bar_h / 2.0),
-            "SCORE",
-            &self.score.to_string(),
-            bump,
-        );
-
-        // Streak chip (left of score chip) when streak > 1
-        if self.streak > 1 {
-            let label = format!("STREAK ×{}", self.streak);
-            let sz = ui
-                .painter()
-                .layout_no_wrap(label.clone(), theme::mono(10.0), GOLD)
-                .size();
-            let chip_w = sz.x + 20.0;
-            // estimate score chip width to offset
-            let score_w =
-                ui.painter()
-                    .layout_no_wrap(self.score.to_string(), theme::mono_semibold(theme::TYPE_SCORE_VALUE), WHITE)
-                    .size()
-                    .x
-                    + 70.0;
-            let cx_right = right - score_w - 10.0;
-            let chip = Rect::from_min_size(
-                Pos2::new(cx_right - chip_w, y + bar_h / 2.0 - 13.0),
-                Vec2::new(chip_w, 26.0),
-            );
-            painter.rect_filled(chip, Rounding::same(999.0), theme::ACCENT_SOFT);
-            painter.rect_stroke(chip, Rounding::same(999.0), Stroke::new(1.0, theme::ACCENT_SOFT));
-            painter.text(chip.center(), Align2::CENTER_CENTER, &label, theme::mono(10.0), GOLD);
-        }
-
-        y += bar_h + 10.0;
-
-        // -- Timer bar (.it-timer) --------------------------------------------
+        // -- Top bar: Q counter, category, skew-tick timer ---------------------------------
+        let qn = painter.text(c.p(64.0, 58.0), Align2::LEFT_CENTER, format!("{:02}", self.current_idx + 1), c.cond(800, 24.0), GOLD);
+        let tot = painter.text(Pos2::new(qn.right() + c.v(4.0), qn.center().y), Align2::LEFT_CENTER,
+            format!("/ {}", self.questions.len()), c.cond(800, 24.0), MUTED);
+        kit::label(&painter, &c, Pos2::new(tot.right() + c.v(16.0), qn.center().y), Align2::LEFT_CENTER, &q.category.to_uppercase(), MUTED);
         let ratio = (self.timer / self.timer_max).clamp(0.0, 1.0);
-        let bar_color = if ratio > 0.5 {
-            GREEN_CORRECT
-        } else if ratio > 0.25 {
-            GOLD
-        } else {
-            RED_WRONG
-        };
-        let track = Rect::from_min_size(Pos2::new(left, y), Vec2::new(content_w, 8.0));
-        painter.rect_filled(track, Rounding::same(999.0), BLUE_MID);
-        if ratio > 0.0 {
-            let mut fill = track;
-            fill.set_right(track.left() + track.width() * ratio);
-            painter.rect_filled(fill, Rounding::same(999.0), bar_color);
-        }
-        y += 8.0 + 20.0;
+        kit::skew_ticks(&painter, c.r(760.0, 47.0, 300.0, 22.0), 20, ratio, c.v(4.0));
+        painter.text(c.p(1100.0, 58.0), Align2::RIGHT_CENTER, format!("{}", self.timer.ceil() as i32),
+            c.cond(800, 26.0), if ratio > 0.25 { GOLD } else { BAD });
 
-        // -- Question (.it-trivia-q) ------------------------------------------
-        let q_galley = painter.layout(
-            q.question.clone(),
-            theme::spectral_medium(27.0),
-            WHITE,
-            content_w,
-        );
-        painter.galley(Pos2::new(left, y), q_galley.clone(), WHITE);
-        y += q_galley.size().y + 20.0;
+        // -- Question --------------------------------------------------------------------------
+        let text = q.question.to_uppercase();
+        let max_w = c.v(1060.0);
+        let size = kit::fit_size(&painter, &text, 600, c.v(theme::TYPE_CLUE), c.v(28.0), max_w, c.v(160.0), 1.12);
+        kit::wrapped(&painter, c.p(64.0, 118.0) + Vec2::new(0.0, ey), &text, theme::cond(600, size), INK, max_w, size * 1.12);
 
-        // -- Options (.it-options, gap 11) ------------------------------------
-        let opt_h = 54.0;
-        let opt_gap = 11.0;
-        let mut clicked_idx = None;
+        // -- 2×2 answers -------------------------------------------------------------------------
         let locked = self.selected.is_some();
-
-        for (i, (ans_text, is_correct)) in answers.iter().enumerate() {
-            let base = Rect::from_min_size(Pos2::new(left, y), Vec2::new(content_w, opt_h));
-            let resp = ui.interact(
-                base,
-                Id::new(("trivia_opt", self.current_idx, i)),
-                if locked { Sense::hover() } else { Sense::click() },
-            );
-
-            // hover translateX(4px)
-            let hov = if locked {
-                0.0
-            } else {
-                ui.ctx().animate_bool(Id::new(("trivia_opt_h", self.current_idx, i)), resp.hovered())
-            };
-            let rect = base.translate(Vec2::new(4.0 * hov, 0.0));
-
-            // resolve state colors
-            let mut dimmed = false;
-            let (border, key_bg, key_fg, text_col, tint, ring) = if let Some(sel) = self.selected {
-                if *is_correct {
-                    (GREEN_CORRECT, GREEN_CORRECT, Color32::from_rgb(12, 26, 16), GREEN_CORRECT, Some(CORRECT_BG), Some(GREEN_CORRECT))
-                } else if sel == i {
-                    (RED_WRONG, RED_WRONG, Color32::from_rgb(42, 12, 17), RED_WRONG, Some(WRONG_BG), Some(RED_WRONG))
-                } else {
-                    dimmed = true;
-                    (LINE, BLUE_BG, INK_DIM, WHITE, None, None)
+        let mut clicked = None;
+        if !locked && !ui.ctx().wants_keyboard_input() {
+            ui.input(|i| {
+                for (k, keys) in [[Key::A, Key::Num1], [Key::B, Key::Num2], [Key::C, Key::Num3], [Key::D, Key::Num4]].iter().enumerate() {
+                    if k < answers.len() && keys.iter().any(|key| i.key_pressed(*key)) {
+                        clicked = Some(k);
+                    }
                 }
-            } else if resp.hovered() {
-                (GOLD, BLUE_BG, INK_DIM, WHITE, None, None)
-            } else {
-                (LINE, BLUE_BG, INK_DIM, WHITE, None, None)
+            });
+        }
+        for (i, (ans, is_correct)) in answers.iter().enumerate() {
+            let (col, row) = (i % 2, i / 2);
+            let rect = c.r(64.0 + col as f32 * 581.0, 312.0 + row as f32 * 94.0, 571.0, 84.0).translate(Vec2::new(0.0, ey));
+            let resp = ui.interact(rect, Id::new(("trivia_opt", self.current_idx, i)), if locked { Sense::hover() } else { Sense::click() });
+            let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() && !locked, 0.12);
+            let picked = self.selected == Some(i);
+            let (fill, ink, badge, badge_ink, alpha, note) = match self.selected {
+                Some(_) if *is_correct => (GOOD, ON_GOOD, ON_GOOD, GOOD, 1.0, Some(("CORRECT", ON_GOOD))),
+                Some(_) if picked => (PANEL, INK, BAD, ON_BAD, 1.0, Some(("YOU PICKED THIS", BAD))),
+                Some(_) => (PANEL, INK, PANEL_HI, MUTED, 0.45, None),
+                None => (kit::lerp_color(PANEL, PANEL_HI, hover), INK, PANEL_HI, MUTED, 1.0, None),
             };
-            let a = if dimmed { 0.42 } else { 1.0 };
-
-            // base fill + optional tint
-            painter.rect_filled(rect, Rounding::same(12.0), BLUE_MID.gamma_multiply(a));
-            if let Some(t) = tint {
-                painter.rect_filled(rect, Rounding::same(12.0), t);
+            let pts = kit::pattern_a(rect, c.v(theme::CHAMFER_MD));
+            kit::poly(&painter, pts.clone(), fill.gamma_multiply(alpha), Stroke::NONE);
+            if locked && picked && !is_correct {
+                kit::inner_stroke(&painter, &pts, c.v(3.0), BAD);
             }
-            painter.rect_stroke(rect, Rounding::same(12.0), Stroke::new(1.0, border.gamma_multiply(a)));
-            if let Some(rc) = ring {
-                painter.rect_stroke(rect, Rounding::same(12.0), Stroke::new(1.0, rc));
+            let b = Rect::from_min_size(Pos2::new(rect.left() + c.v(22.0), rect.center().y - c.v(20.0)), Vec2::splat(c.v(40.0)));
+            painter.rect_filled(b, 0.0, badge.gamma_multiply(alpha));
+            painter.text(b.center(), Align2::CENTER_CENTER, ((b'A' + i as u8) as char).to_string(), c.cond(800, 18.0), badge_ink.gamma_multiply(alpha));
+            let note_w = note.map(|(t, _)| kit::text_width(&painter, t, c.cond(700, 13.0), 0.2) + c.v(24.0)).unwrap_or(0.0);
+            let tw = rect.right() - b.right() - c.v(34.0) - note_w;
+            let ts = kit::fit_size(&painter, ans, 700, c.v(26.0), c.v(15.0), tw, c.v(64.0), 1.1);
+            let galley = {
+                let mut job = egui::text::LayoutJob::default();
+                job.wrap.max_width = tw;
+                job.append(ans, 0.0, egui::TextFormat { font_id: theme::cond(700, ts), color: ink.gamma_multiply(alpha), line_height: Some(ts * 1.1), ..Default::default() });
+                painter.layout_job(job)
+            };
+            painter.galley(Pos2::new(b.right() + c.v(18.0), rect.center().y - galley.size().y / 2.0), galley, INK);
+            if let Some((t, col)) = note {
+                kit::text_tracked(&painter, Pos2::new(rect.right() - c.v(22.0), rect.center().y), Align2::RIGHT_CENTER, t, c.cond(700, 13.0), col, 0.2);
             }
-
-            // key badge
-            let badge = Rect::from_min_size(
-                Pos2::new(rect.left() + 18.0, rect.center().y - 13.0),
-                Vec2::splat(26.0),
-            );
-            painter.rect_filled(badge, Rounding::same(6.0), key_bg.gamma_multiply(a));
-            if self.selected.is_none() {
-                painter.rect_stroke(badge, Rounding::same(6.0), Stroke::new(1.0, LINE));
+            if resp.hovered() && !locked {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            painter.text(
-                badge.center(),
-                Align2::CENTER_CENTER,
-                (b'A' + i as u8) as char,
-                theme::mono(12.0),
-                key_fg.gamma_multiply(a),
-            );
-
-            // answer text
-            painter.text(
-                Pos2::new(badge.right() + 14.0, rect.center().y),
-                Align2::LEFT_CENTER,
-                ans_text,
-                theme::plex(15.0),
-                text_col.gamma_multiply(a),
-            );
-
-            // correct ✓ mark
-            if locked && *is_correct {
-                painter.text(
-                    Pos2::new(rect.right() - 18.0, rect.center().y),
-                    Align2::RIGHT_CENTER,
-                    "✓",
-                    theme::plex_semibold(16.0),
-                    GREEN_CORRECT,
-                );
+            if resp.clicked() {
+                clicked = Some(i);
             }
-
-            if resp.clicked() && !locked {
-                clicked_idx = Some(i);
-            }
-            y += opt_h + opt_gap;
         }
 
-        // apply selection
-        if let Some(i) = clicked_idx {
+        if let Some(i) = clicked.filter(|_| !locked) {
             let is_correct = answers[i].1;
             self.selected = Some(i);
             self.select_start = now;
@@ -371,46 +209,19 @@ impl TriviaScreen {
             }
         }
 
-        // -- Footer pinned to the bottom (.it-trivia-foot) --------------------
+        // -- Next ------------------------------------------------------------------------------
         let mut action = None;
+        let reveal = self.selected.map(|sel| sel != usize::MAX && answers[sel].1);
         if let Some(sel) = self.selected {
-            let foot_y = screen.bottom() - 28.0 - 38.0 + ey;
-            let foot_cy = foot_y + 19.0;
-
-            // gain text with it-popup slide
-            let pe = ((now - self.select_start) / 0.5).clamp(0.0, 1.0) as f32;
-            let pe = 1.0 - (1.0 - pe).powi(3);
-            let gain_dy = (1.0 - pe) * 18.0;
-            let timed = sel == usize::MAX;
-            let (gain, gcol) = if timed {
-                ("time!".to_string(), RED_WRONG)
-            } else if answers[sel].1 {
-                (format!("+{}", trivia_score(true, self.streak.saturating_sub(1))), GREEN_CORRECT)
-            } else {
-                ("+0".to_string(), RED_WRONG)
-            };
-            painter.text(
-                Pos2::new(left, foot_cy + gain_dy),
-                Align2::LEFT_CENTER,
-                &gain,
-                theme::mono_semibold(18.0),
-                gcol.gamma_multiply(pe),
-            );
-
-            // Next / Finish primary button, right-aligned
-            let label = if self.current_idx + 1 < self.questions.len() {
-                "Next →"
-            } else {
-                "Finish →"
-            };
-            let bsz = ui
-                .painter()
-                .layout_no_wrap(label.to_string(), theme::plex_semibold(14.0), WHITE)
-                .size()
-                + Vec2::new(44.0, 24.0);
-            let btn_rect = Rect::from_min_size(Pos2::new(right - bsz.x, foot_y), bsz);
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(btn_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
-            if kit::primary_button(&mut child, label).clicked() {
+            let label = if self.current_idx + 1 < self.questions.len() { "NEXT" } else { "FINISH" };
+            if sel == usize::MAX {
+                kit::text_tracked(&painter, c.p(64.0, 540.0), Align2::LEFT_CENTER, "TIME'S UP", c.cond(800, 28.0), BAD, 0.06);
+            }
+            let br = c.r(1066.0, 520.0, 150.0, 56.0);
+            kit::key_hint(&painter, &c, Pos2::new(br.left() - c.v(12.0), br.center().y), Align2::RIGHT_CENTER, "ENTER ↵");
+            if kit::button(ui, &c, br, label, Btn::Primary, "trivia_next").clicked()
+                || (ui.input(|i| i.key_pressed(Key::Enter)) && kit::since(ui, self.select_start, 0.0) > 0.2)
+            {
                 self.current_idx += 1;
                 self.selected = None;
                 self.timer = self.timer_max;
@@ -418,6 +229,35 @@ impl TriviaScreen {
             }
         }
 
+        // -- Roster ------------------------------------------------------------------------------
+        if self.phones.is_empty() {
+            let mut e = RosterEntry::new("You", self.score);
+            if self.streak > 1 {
+                e.note = Some(format!("×{} STREAK", self.streak));
+            } else if reveal == Some(false) || self.selected == Some(usize::MAX) {
+                e.note = Some("STREAK LOST".into());
+            }
+            if let Some(ok) = reveal {
+                e.delta = Some(if ok { trivia_score(true, self.streak.saturating_sub(1)) } else { 0 });
+                e.top = Some(if ok { GOOD } else { BAD });
+            }
+            kit::roster(ui, &c, 64.0, 376.0, 772.0, &[e], None, false);
+        } else {
+            let entries: Vec<RosterEntry> = self.phones.iter().map(|(n, s)| RosterEntry::new(n, *s)).collect();
+            let w = (entries.len() as f32 * 376.0 + (entries.len() as f32 - 1.0) * 12.0).min(1152.0);
+            kit::roster(ui, &c, 64.0, w, 772.0, &entries, None, false);
+        }
         action
     }
+}
+
+/// Error state shared by the trivia-style screens. Returns true on BACK.
+pub fn error_screen(ui: &mut egui::Ui, title: &str, detail: &str) -> bool {
+    let c = Canvas::new(ui.ctx());
+    let p = ui.painter().clone();
+    kit::tag(&p, &c, c.p(64.0, 260.0), "ERROR", kit::TagStyle::Gold, theme::TYPE_TAG);
+    p.text(c.p(64.0, 320.0), Align2::LEFT_TOP, title, c.cond(800, 56.0), INK);
+    kit::wrapped(&p, c.p(64.0, 392.0), detail, c.barlow(500, theme::TYPE_BODY), MUTED, c.v(800.0), c.v(26.0));
+    kit::button(ui, &c, c.r(64.0, 470.0, 200.0, 56.0), "BACK TO MENU", Btn::Primary, "err_back").clicked()
+        || ui.input(|i| i.key_pressed(Key::Escape))
 }

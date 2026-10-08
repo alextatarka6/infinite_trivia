@@ -1,105 +1,94 @@
-use egui::{FontFamily, FontId, Rounding, Stroke, Style, Visuals};
+use egui::{Color32, FontFamily, FontId, Rounding, Stroke, Style, Visuals};
 
 // -- Design tokens ------------------------------------------------------------
-// Color / radius / spacing / type constants are generated at build time from
-// `design/tokens.toml` (see build.rs). Edit that file, not these names.
-// This brings BLUE_BG, BLUE_MID, BLUE_DARK, GOLD, GOLD_HOVER, WHITE, INK_DIM,
-// GREEN_CORRECT, RED_WRONG, ON_ACCENT, BODY_BG, APP_TOP/MID/BOTTOM, TILE_*,
-// LINE, ACCENT_SOFT, CORRECT_BG, WRONG_BG, RADIUS_*, SPACE_*, TYPE_* into scope.
-// Some tokens aren't consumed by every screen yet, hence allow(dead_code).
+// Color / shape / texture / spacing / type constants are generated at build
+// time from `theme/tokens.toml` (see build.rs). Edit that file, not these names.
+// This brings BG, PANEL, PANEL_HI, GOLD, GOLD_HI, ON_GOLD, INK, MUTED, GOOD,
+// ON_GOOD, BAD, ON_BAD, LINE, CANVAS_*, CHAMFER_*, SLANT_*, TEXTURE_*, SPACE_*
+// and TYPE_* into scope. Some aren't consumed yet, hence allow(dead_code).
 mod tokens {
     #![allow(dead_code)]
     include!(concat!(env!("OUT_DIR"), "/design_tokens.rs"));
 }
 pub use tokens::*;
 
+/// `c` at `alpha` (0..1), premultiplied — for the textures and hairlines.
+pub fn alpha(c: Color32, alpha: f32) -> Color32 {
+    c.gamma_multiply(alpha)
+}
+
 // -- Global style -------------------------------------------------------------
+// Flat, square-cornered widgets. Hover changes the fill only (no lift/glow).
 pub fn apply(ctx: &egui::Context) {
     let mut style = Style::default();
     let mut visuals = Visuals::dark();
 
-    visuals.window_fill = BLUE_BG;
-    visuals.panel_fill = BLUE_BG;
-    visuals.extreme_bg_color = BLUE_DARK;
-    visuals.faint_bg_color = BLUE_MID;
+    visuals.window_fill = BG;
+    visuals.panel_fill = BG;
+    visuals.extreme_bg_color = PANEL;
+    visuals.faint_bg_color = PANEL;
+    visuals.window_rounding = Rounding::ZERO;
+    visuals.menu_rounding = Rounding::ZERO;
 
-    visuals.widgets.noninteractive.bg_fill = BLUE_MID;
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, WHITE);
+    for w in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        w.rounding = Rounding::ZERO;
+        w.expansion = 0.0;
+    }
+    visuals.widgets.noninteractive.bg_fill = PANEL;
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, INK);
+    visuals.widgets.inactive.bg_fill = PANEL;
+    visuals.widgets.inactive.weak_bg_fill = PANEL;
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, INK);
+    visuals.widgets.hovered.bg_fill = PANEL_HI;
+    visuals.widgets.hovered.weak_bg_fill = PANEL_HI;
+    visuals.widgets.hovered.bg_stroke = Stroke::NONE;
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, INK);
+    visuals.widgets.active.bg_fill = GOLD;
+    visuals.widgets.active.weak_bg_fill = GOLD;
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0, ON_GOLD);
 
-    visuals.widgets.inactive.bg_fill = BLUE_DARK;
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, GOLD);
-    visuals.widgets.inactive.rounding = Rounding::same(RADIUS_PILL);
-
-    visuals.widgets.hovered.bg_fill = GOLD;
-    visuals.widgets.hovered.fg_stroke = Stroke::new(2.0, ON_ACCENT);
-    visuals.widgets.hovered.rounding = Rounding::same(RADIUS_PILL);
-
-    visuals.widgets.active.bg_fill = GOLD_HOVER;
-    visuals.widgets.active.fg_stroke = Stroke::new(2.0, ON_ACCENT);
-    visuals.widgets.active.rounding = Rounding::same(RADIUS_PILL);
-
-    visuals.selection.bg_fill = ACCENT_SOFT;
-    visuals.selection.stroke = Stroke::new(1.0, GOLD);
-    visuals.override_text_color = Some(WHITE);
+    visuals.selection.bg_fill = alpha(GOLD, 0.35);
+    visuals.selection.stroke = Stroke::new(2.0, GOLD);
+    visuals.text_cursor.stroke = Stroke::new(3.0, GOLD);
+    visuals.override_text_color = Some(INK);
 
     style.visuals = visuals;
     style.spacing.item_spacing = egui::vec2(SPACE_ITEM, SPACE_ITEM);
-    style.spacing.button_padding = egui::vec2(SPACE_BUTTON_X, SPACE_BUTTON_Y);
 
     ctx.set_style(style);
 }
 
-// -- Font helpers -------------------------------------------------------------
+// -- Fonts ----------------------------------------------------------------------
+// Barlow Condensed: headlines, numbers, scores, labels, buttons (usually caps).
+// Barlow: body, descriptions, tossup reading text. Registered in App::new.
 
-// Spectral — serif display face
-pub fn spectral(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("spectral".into()))
-}
-pub fn spectral_medium(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("spectral-medium".into()))
-}
-pub fn spectral_regular(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("spectral-regular".into()))
-}
-pub fn spectral_italic(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("spectral-italic".into()))
+fn family(name: &str) -> FontFamily {
+    FontFamily::Name(name.into())
 }
 
-// IBM Plex Sans — UI / body
-pub fn plex(size: f32) -> FontId {
-    FontId::proportional(size)
-}
-pub fn plex_medium(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("plex-medium".into()))
-}
-pub fn plex_semibold(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("plex-semibold".into()))
-}
-
-// IBM Plex Mono — numerals, dollar values, category tags, kicker labels
-pub fn mono(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Monospace)
-}
-pub fn mono_medium(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("mono-medium".into()))
-}
-pub fn mono_semibold(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("mono-semibold".into()))
+/// Barlow Condensed at `weight` (500, 600, 700 or 800).
+pub fn cond(weight: u16, size: f32) -> FontId {
+    let name = match weight {
+        0..=550 => "cond-500",
+        551..=650 => "cond-600",
+        651..=750 => "cond-700",
+        _ => "cond-800",
+    };
+    FontId::new(size, family(name))
 }
 
-// Role helpers — sizes come straight from the type-scale tokens.
-pub fn heading_font() -> FontId {
-    spectral(TYPE_HEADING)
-}
-pub fn subheading_font() -> FontId {
-    plex_medium(TYPE_SUBHEADING)
-}
-pub fn body_font() -> FontId {
-    plex(TYPE_BODY)
-}
-pub fn dollar_font() -> FontId {
-    mono_semibold(TYPE_DOLLAR)
-}
-pub fn mono_font(size: f32) -> FontId {
-    mono(size)
+/// Barlow at `weight` (400, 500 or 600).
+pub fn barlow(weight: u16, size: f32) -> FontId {
+    let name = match weight {
+        0..=450 => "barlow-400",
+        451..=550 => "barlow-500",
+        _ => "barlow-600",
+    };
+    FontId::new(size, family(name))
 }
