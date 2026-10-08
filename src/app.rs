@@ -4,8 +4,9 @@ use egui::Context;
 use crate::api::{jeopardy::JeopardyStore, opentdb, qbreader};
 use crate::game::state::Screen;
 use crate::screens::{
+    kit,
     dev::DevMenu,
-    home::HomeScreen,
+    home::{Couch, HomeAction, HomeScreen},
     lobby::{LobbyAction, LobbyMode, LobbyScreen},
     jeopardy::{
         board::{Board, BoardAction},
@@ -16,12 +17,44 @@ use crate::screens::{
     },
     mix::{MixPhase, MixScreen, MixSignal},
     trivia::question::TriviaScreen,
-    quizbowl::{bonus::BonusScreen, tossup::{TossupScreen, TossupState}},
+    quizbowl::{bonus::BonusScreen, tossup::TossupScreen},
 };
-use crate::server::{protocol::ServerMsg, GameServer};
+use crate::multiplayer::{self, Multiplayer};
+use crate::server::{protocol::{ClientMsg, ServerMsg}, GameServer};
 use crate::theme;
 
-const JSON_PATH: &str = "assets/JEOPARDY_QUESTIONS1.json";
+const JSON_NAME: &str = "JEOPARDY_QUESTIONS1.json";
+
+/// Desktop typefaces, compiled in so the app looks right from any directory.
+const FONTS: &[(&str, &[u8])] = &[
+    ("cond-500", include_bytes!("../assets/fonts/BarlowCondensed-Medium.ttf")),
+    ("cond-600", include_bytes!("../assets/fonts/BarlowCondensed-SemiBold.ttf")),
+    ("cond-700", include_bytes!("../assets/fonts/BarlowCondensed-Bold.ttf")),
+    ("cond-800", include_bytes!("../assets/fonts/BarlowCondensed-ExtraBold.ttf")),
+    ("barlow-400", include_bytes!("../assets/fonts/Barlow-Regular.ttf")),
+    ("barlow-500", include_bytes!("../assets/fonts/Barlow-Medium.ttf")),
+    ("barlow-600", include_bytes!("../assets/fonts/Barlow-SemiBold.ttf")),
+];
+
+/// Find the Jeopardy data: `IT_JEOPARDY_JSON`, then `assets/` beside the
+/// executable, in a macOS bundle's Resources, at the repo root (for
+/// `target/<profile>/`), and finally relative to the working directory.
+fn jeopardy_json_path() -> std::path::PathBuf {
+    use std::path::PathBuf;
+    if let Some(p) = std::env::var_os("IT_JEOPARDY_JSON") {
+        return PathBuf::from(p);
+    }
+    let mut candidates = Vec::new();
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) {
+        candidates.push(dir.join("assets").join(JSON_NAME));
+        candidates.push(dir.join("../Resources/assets").join(JSON_NAME));
+        candidates.push(dir.join("../../assets").join(JSON_NAME));
+    }
+    let cwd = PathBuf::from("assets").join(JSON_NAME);
+    candidates.into_iter().find(|p| p.exists()).unwrap_or(cwd)
+}
+
+type StoreSlot = Arc<Mutex<Option<Result<JeopardyStore, String>>>>;
 
 enum JeopardyOverlay {
     Clue(ClueScreen),
@@ -35,9 +68,15 @@ pub struct App {
     dev_menu: DevMenu,
     jeopardy_store: Option<JeopardyStore>,
     jeopardy_store_error: Option<String>,
+    /// Filled by the background thread that parses the Jeopardy data.
+    pending_store: StoreSlot,
     jeopardy_setup: Option<JeopardySetupScreen>,
     jeopardy_board: Option<Board>,
     jeopardy_overlay: Option<JeopardyOverlay>,
+    /// Config of the running game, reused by PLAY AGAIN on the standings screen.
+    jeopardy_config: Option<JeopardyConfig>,
+    /// Set (to the time it appeared) once Final is done: shows final standings.
+    jeopardy_over: Option<f64>,
     daily_doubles: Vec<(usize, usize)>,
     trivia: Option<TriviaScreen>,
     trivia_level: u8,
@@ -50,10 +89,11 @@ pub struct App {
     // Multiplayer
     server: Option<Arc<GameServer>>,
     lobby: Option<LobbyScreen>,
-    mp_trivia_last_q: i64,
-    mp_qb_last_chars: usize,
-    mp_j_clue_broadcast: bool,
-    mp_j_board_dirty: bool,
+    /// Why the phone server isn't running, if starting it failed.
+    server_error: Option<String>,
+    mp: Multiplayer,
+    /// Identifies the visible view; a change triggers the stinger sweep.
+    view_key: &'static str,
     rt: tokio::runtime::Runtime,
     pending_trivia: Arc<Mutex<Option<Result<Vec<crate::api::opentdb::TriviaQuestion>, String>>>>,
     pending_qb: Arc<Mutex<Option<Result<crate::api::qbreader::Tossup, String>>>>,
@@ -66,54 +106,37 @@ impl App {
         {
             let mut fonts = egui::FontDefinitions::default();
 
-            // Helper to register a font file into fonts.font_data
-            let load = |fonts: &mut egui::FontDefinitions, key: &str, path: &str| {
-                if let Ok(bytes) = std::fs::read(path) {
-                    fonts.font_data.insert(key.to_owned(), egui::FontData::from_owned(bytes));
-                }
-            };
+            for &(key, bytes) in FONTS {
+                fonts.font_data.insert(key.to_owned(), egui::FontData::from_static(bytes));
+                // Fall back to egui's bundled fonts for glyphs Barlow lacks (∞, ↵, ✓).
+                let mut chain = vec![key.to_owned()];
+                chain.extend(fonts.families[&egui::FontFamily::Proportional].iter().cloned());
+                fonts.families.insert(egui::FontFamily::Name(key.into()), chain);
+            }
 
-            load(&mut fonts, "spectral-400",        "assets/spectral-400.ttf");
-            load(&mut fonts, "spectral-500",        "assets/spectral-500.ttf");
-            load(&mut fonts, "spectral-600",        "assets/spectral-600.ttf");
-            load(&mut fonts, "spectral-700",        "assets/spectral-700.ttf");
-            load(&mut fonts, "spectral-500italic",  "assets/spectral-500italic.ttf");
-            load(&mut fonts, "plexsans-400",        "assets/ibmplexsans-400.ttf");
-            load(&mut fonts, "plexsans-500",        "assets/ibmplexsans-500.ttf");
-            load(&mut fonts, "plexsans-600",        "assets/ibmplexsans-600.ttf");
-            load(&mut fonts, "plexmono-400",        "assets/ibmplexmono-400.ttf");
-            load(&mut fonts, "plexmono-500",        "assets/ibmplexmono-500.ttf");
-            load(&mut fonts, "plexmono-600",        "assets/ibmplexmono-600.ttf");
-
-            // IBM Plex Sans replaces the default proportional family
+            // Barlow is the default UI face; condensed bold for monospace-ish numerals.
             fonts.families.entry(egui::FontFamily::Proportional).or_default()
-                .splice(0..0, ["plexsans-400".to_owned()]);
-
-            // IBM Plex Mono replaces the default monospace family
+                .insert(0, "barlow-500".to_owned());
             fonts.families.entry(egui::FontFamily::Monospace).or_default()
-                .splice(0..0, ["plexmono-400".to_owned()]);
-
-            // Named families for weight/style variants
-            let named = &mut fonts.families;
-            named.insert(egui::FontFamily::Name("spectral".into()),         vec!["spectral-700".to_owned()]);
-            named.insert(egui::FontFamily::Name("spectral-medium".into()),  vec!["spectral-500".to_owned()]);
-            named.insert(egui::FontFamily::Name("spectral-regular".into()), vec!["spectral-400".to_owned()]);
-            named.insert(egui::FontFamily::Name("spectral-italic".into()),  vec!["spectral-500italic".to_owned()]);
-            named.insert(egui::FontFamily::Name("plex-medium".into()),      vec!["plexsans-500".to_owned()]);
-            named.insert(egui::FontFamily::Name("plex-semibold".into()),    vec!["plexsans-600".to_owned()]);
-            named.insert(egui::FontFamily::Name("mono-medium".into()),      vec!["plexmono-500".to_owned()]);
-            named.insert(egui::FontFamily::Name("mono-semibold".into()),    vec!["plexmono-600".to_owned()]);
-
-            // Keep old "serif" alias so existing call-sites don't break
-            named.insert(egui::FontFamily::Name("serif".into()), vec!["spectral-700".to_owned()]);
+                .insert(0, "cond-700".to_owned());
 
             cc.egui_ctx.set_fonts(fonts);
         }
+        // Screens are painted at fixed canvas positions, so egui's "a widget
+        // moved, draw another frame" check only keeps the UI redrawing forever.
+        cc.egui_ctx.options_mut(|o| o.repaint_on_widget_change = false);
 
-        let (jeopardy_store, jeopardy_store_error) = match JeopardyStore::load(JSON_PATH) {
-            Ok(store) => (Some(store), None),
-            Err(e) => (None, Some(e)),
-        };
+        // Parsing ~55 MB of JSON takes a moment: do it off the UI thread.
+        let pending_store: StoreSlot = Arc::new(Mutex::new(None));
+        {
+            let slot = Arc::clone(&pending_store);
+            let ctx = cc.egui_ctx.clone();
+            std::thread::spawn(move || {
+                let result = JeopardyStore::load(&jeopardy_json_path());
+                *slot.lock().unwrap() = Some(result);
+                ctx.request_repaint();
+            });
+        }
 
         Self {
             screen: if std::env::var("IT_DEV").is_ok() {
@@ -123,11 +146,14 @@ impl App {
             },
             home_screen: HomeScreen::default(),
             dev_menu: DevMenu::default(),
-            jeopardy_store,
-            jeopardy_store_error,
+            jeopardy_store: None,
+            jeopardy_store_error: None,
+            pending_store,
             jeopardy_setup: None,
             jeopardy_board: None,
             jeopardy_overlay: None,
+            jeopardy_config: None,
+            jeopardy_over: None,
             daily_doubles: vec![],
             trivia: None,
             trivia_level: 2,
@@ -139,10 +165,9 @@ impl App {
             mix_level: 2,
             server: None,
             lobby: None,
-            mp_trivia_last_q: -1,
-            mp_qb_last_chars: 0,
-            mp_j_clue_broadcast: false,
-            mp_j_board_dirty: true,
+            server_error: None,
+            mp: Multiplayer::default(),
+            view_key: "",
             rt: tokio::runtime::Runtime::new().expect("tokio runtime"),
             pending_trivia: Arc::new(Mutex::new(None)),
             pending_qb: Arc::new(Mutex::new(None)),
@@ -151,6 +176,8 @@ impl App {
     }
 
     fn start_jeopardy(&mut self, config: JeopardyConfig) {
+        self.jeopardy_config = Some(config.clone());
+        self.jeopardy_over = None;
         let store = match &self.jeopardy_store {
             Some(s) => s,
             None => return,
@@ -182,21 +209,15 @@ impl App {
         }
     }
 
+    /// `count` Daily Doubles in distinct columns, never on the top row.
     fn pick_daily_doubles(cols: usize, rows: usize, count: usize) -> Vec<(usize, usize)> {
-        use std::collections::HashSet;
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() as usize;
-        let mut positions = HashSet::new();
-        let mut i = 0usize;
-        while positions.len() < count {
-            let col = (seed.wrapping_add(i * 7)) % cols;
-            let row = 1 + (seed.wrapping_add(i * 13)) % (rows - 1).max(1);
-            positions.insert((col, row));
-            i += 1;
-        }
-        positions.into_iter().collect()
+        let mut columns: Vec<usize> = (0..cols).collect();
+        fastrand::shuffle(&mut columns);
+        columns
+            .into_iter()
+            .take(count)
+            .map(|col| (col, 1 + fastrand::usize(..rows.saturating_sub(1).max(1))))
+            .collect()
     }
 
     fn start_trivia(&mut self, ctx: Context, level: u8) {
@@ -301,6 +322,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         theme::apply(ctx);
+        self.poll_store();
 
         // Poll async trivia result (standalone mode only)
         if self.screen == Screen::Trivia {
@@ -382,49 +404,18 @@ impl eframe::App for App {
         let dt = ctx.input(|i| i.stable_dt);
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::BLUE_BG))
+            .frame(egui::Frame::default().fill(theme::BG))
             .show(ctx, |ui| match self.screen {
                 Screen::Home => {
-                    if let Some((next, level)) = self.home_screen.show(ui) {
-                        self.screen = next.clone();
-                        match next {
-                            Screen::JeopardySetup => {
-                                if self.home_screen.jeopardy_solo {
-                                    self.jeopardy_setup = Some(JeopardySetupScreen::default());
-                                } else {
-                                    // Teams = phone multiplayer
-                                    if self.server.is_none() {
-                                        let srv = GameServer::start(7777, &self.rt);
-                                        let url = srv.url();
-                                        self.lobby = Some(LobbyScreen::new(&url));
-                                        self.server = Some(srv);
-                                    }
-                                    if let Some(ref mut lobby) = self.lobby {
-                                        lobby.mode = LobbyMode::Jeopardy;
-                                    }
-                                    self.screen = Screen::Lobby;
-                                }
-                            }
-                            Screen::Trivia => self.start_trivia(ctx.clone(), level),
-                            Screen::Quizbowl => {
-                                self.quizbowl_level = level;
-                                self.quizbowl = None;
-                                self.quizbowl_bonus = None;
-                                self.recent_qb_categories.clear();
-                                self.start_quizbowl(ctx.clone());
-                            }
-                            Screen::Mix => self.start_mix(ctx.clone(), level),
-                            Screen::Lobby => {
-                                // Start the multiplayer server, open lobby
-                                if self.server.is_none() {
-                                    let srv = GameServer::start(7777, &self.rt);
-                                    let url = srv.url();
-                                    self.lobby = Some(LobbyScreen::new(&url));
-                                    self.server = Some(srv);
-                                }
-                            }
-                            Screen::Jeopardy | Screen::Home | Screen::DevMenu => {}
+                    let url = self.server.as_ref().map(|s| s.url());
+                    let players = self.server.as_ref().map(|s| s.players()).unwrap_or_default();
+                    let couch = Couch { url: url.as_deref(), players: &players };
+                    match self.home_screen.show(ui, couch) {
+                        Some(HomeAction::OpenTeams) => self.ensure_server(ctx),
+                        Some(HomeAction::Start { mode, level, solo }) => {
+                            self.start_from_home(mode, level, solo, ctx)
                         }
+                        None => {}
                     }
                 }
 
@@ -450,12 +441,17 @@ impl eframe::App for App {
                 }
 
                 Screen::Trivia => {
+                    let phones: Vec<(String, i32)> = self.server.as_ref()
+                        .map(|s| s.players().into_iter().map(|p| (p.name, p.score)).collect())
+                        .unwrap_or_default();
                     if let Some(ref mut trivia) = self.trivia {
+                        trivia.phones = phones;
                         use crate::screens::trivia::question::TriviaAction;
                         if let Some(action) = trivia.show(ui, dt) {
                             match action {
                                 TriviaAction::Quit => self.screen = Screen::Home,
                                 TriviaAction::Restart => {
+                                    self.mp.new_game(self.server.as_deref());
                                     self.start_trivia(ctx.clone(), self.trivia_level);
                                 }
                                 TriviaAction::Next { .. } => {}
@@ -483,34 +479,100 @@ impl eframe::App for App {
                 }
             });
 
+        // Stinger sweep on every screen change (screens with their own band skip it).
+        let (key, label) = self.view_identity();
+        if key != self.view_key {
+            let back_to_board = key == "board" && matches!(self.view_key, "clue" | "dd" | "final");
+            if !matches!(key, "dd" | "final" | "dev") {
+                kit::start_sweep(ctx, if back_to_board { "" } else { label });
+            }
+            self.view_key = key;
+        }
+        kit::draw_sweep(ctx);
+
         // Multiplayer: broadcast game state and handle phone inputs each frame
         self.tick_multiplayer(ctx);
 
-        ctx.request_repaint();
+        #[cfg(debug_assertions)]
+        dev_screenshot(ctx);
+
+        // Animations request their own frames, async results and phone input
+        // wake the UI, so only running timers need continuous redraws.
+        if self.timer_running() {
+            ctx.request_repaint();
+        }
     }
 }
 
 impl App {
+    /// Promote the background-loaded Jeopardy data, starting any game or Mix
+    /// round that was waiting for it.
+    fn poll_store(&mut self) {
+        let Some(result) = self.pending_store.try_lock().ok().and_then(|mut g| g.take()) else { return };
+        match result {
+            Ok(store) => self.jeopardy_store = Some(store),
+            Err(e) => self.jeopardy_store_error = Some(e),
+        }
+        if self.screen == Screen::Jeopardy && self.jeopardy_board.is_none() {
+            if let Some(config) = self.jeopardy_config.clone() {
+                self.start_jeopardy(config);
+            }
+        }
+        if let (Some(store), Some(mix)) = (&self.jeopardy_store, self.mix.as_mut()) {
+            mix.fill_jeopardy_clues(|| store.random_clues("Jeopardy!", crate::screens::mix::JEOPARDY_COUNT));
+        }
+    }
+
+    /// True while a countdown or the tossup reader is running.
+    fn timer_running(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if std::env::var_os("IT_SHOT").is_some() {
+            return true;
+        }
+        let trivia_live = |t: &TriviaScreen| {
+            !t.loading && t.error.is_none() && t.current_idx < t.questions.len() && t.selected.is_none()
+        };
+        let qb_live = |q: &TossupScreen| {
+            use crate::screens::quizbowl::tossup::TossupState;
+            !q.loading && matches!(q.state, TossupState::Reading | TossupState::FinishedReading { .. })
+        };
+        match self.screen {
+            Screen::Trivia => self.trivia.as_ref().is_some_and(trivia_live),
+            Screen::Quizbowl => self.quizbowl_bonus.is_none() && self.quizbowl.as_ref().is_some_and(qb_live),
+            Screen::Mix => self.mix.as_ref().is_some_and(|m| match m.phase {
+                MixPhase::Trivia => m.trivia.as_ref().is_some_and(trivia_live),
+                MixPhase::Quizbowl => m.quizbowl.as_ref().is_some_and(qb_live),
+                _ => false,
+            }),
+            Screen::DevMenu => true,
+            _ => false,
+        }
+    }
+
     fn update_jeopardy(&mut self, ui: &mut egui::Ui, ctx: &Context) {
-        if let Some(err) = &self.jeopardy_store_error {
-            ui.vertical_centered(|ui| {
-                ui.add_space(60.0);
-                ui.label(
-                    egui::RichText::new("Could not load Jeopardy data")
-                        .font(theme::subheading_font())
-                        .color(theme::RED_WRONG),
-                );
-                ui.label(egui::RichText::new(err).color(theme::WHITE));
-                ui.add_space(12.0);
-                if ui.button("Back to Menu").clicked() {
-                    self.screen = Screen::Home;
-                }
-            });
+        if let Some(err) = self.jeopardy_store_error.clone() {
+            kit::backdrop(ui.ctx(), None);
+            if crate::screens::trivia::question::error_screen(ui, "COULD NOT LOAD JEOPARDY DATA", &err) {
+                self.screen = Screen::Home;
+            }
             return;
         }
 
+        if self.jeopardy_store.is_none() {
+            kit::loading(ui, "LOADING CLUES", "JEOPARDY! · 216,000 CLUES", None);
+            return;
+        }
+
+        if let Some(start) = self.jeopardy_over {
+            self.show_jeopardy_standings(ui, start);
+            return;
+        }
+
+        // Overlays draw the roster row, so hand them the board's teams.
+        let teams = self.jeopardy_board.as_ref().map(|b| (b.players.clone(), b.active)).unwrap_or_default();
         let overlay_done = match self.jeopardy_overlay.take() {
             Some(JeopardyOverlay::Clue(mut s)) => {
+                (s.teams, s.active) = teams.clone();
                 use crate::screens::jeopardy::clue::ClueAction;
                 match s.show(ui) {
                     Some(ClueAction::Done { correct }) => {
@@ -529,6 +591,7 @@ impl App {
             }
 
             Some(JeopardyOverlay::DailyDouble(mut s)) => {
+                (s.teams, s.active) = teams.clone();
                 use crate::screens::jeopardy::daily_double::DailyDoubleAction;
                 match s.show(ui) {
                     Some(DailyDoubleAction::Done { winnings }) => {
@@ -548,12 +611,13 @@ impl App {
             Some(JeopardyOverlay::Final(mut s)) => {
                 use crate::screens::jeopardy::final_jeopardy::FinalAction;
                 match s.show(ui) {
-                    Some(FinalAction::Done { score_delta }) => {
+                    Some(FinalAction::Done { deltas }) => {
                         if let Some(board) = &mut self.jeopardy_board {
-                            board.players[board.active].1 += score_delta;
+                            for (player, d) in board.players.iter_mut().zip(deltas) {
+                                player.1 += d;
+                            }
                         }
-                        self.screen = Screen::Home;
-                        self.jeopardy_board = None;
+                        self.jeopardy_over = Some(ui.input(|i| i.time));
                         return;
                     }
                     None => {
@@ -567,36 +631,23 @@ impl App {
         };
 
         if overlay_done || self.jeopardy_overlay.is_none() {
-            if let Some(board) = self.jeopardy_board.as_mut() {
-                let daily_doubles = self.daily_doubles.clone();
-                let action = board.show(ui);
-
+            if let Some(b) = self.jeopardy_board.as_mut() {
+                b.dd_left = self.daily_doubles.iter().filter(|&&(c, r)| !b.used[c][r]).count();
+            }
+            let action = self.jeopardy_board.as_mut().and_then(|b| b.show(ui));
+            if let Some(BoardAction::SelectClue { col, row }) = action {
+                self.open_clue(col, row);
+            } else if let Some(board) = self.jeopardy_board.as_mut() {
                 match action {
-                    Some(BoardAction::SelectClue { col, row }) => {
-                        let is_dd = daily_doubles.contains(&(col, row));
-                        if let Some((_, clues)) = board.categories.get(col) {
-                            if let Some(clue) = clues.get(row).cloned() {
-                                board.used[col][row] = true;
-                                let active_score = board.active_score();
-                                if is_dd {
-                                    self.jeopardy_overlay = Some(JeopardyOverlay::DailyDouble(
-                                        DailyDoubleScreen::new(clue, active_score),
-                                    ));
-                                } else {
-                                    self.jeopardy_overlay =
-                                        Some(JeopardyOverlay::Clue(ClueScreen::new(clue)));
-                                }
-                            }
-                        }
-                    }
+                    Some(BoardAction::SelectClue { .. }) => {}
 
                     Some(BoardAction::GoToFinal) => {
                         if board.is_double_jeopardy {
                             if let Some(store) = &self.jeopardy_store {
                                 if let Some(clue) = store.random_final() {
-                                    let active_score = board.active_score();
+                                    let phones = !self.mp.jeopardy.player_ids.is_empty();
                                     self.jeopardy_overlay = Some(JeopardyOverlay::Final(
-                                        FinalJeopardy::new(clue, active_score),
+                                        FinalJeopardy::new(clue, board.players.clone(), phones),
                                     ));
                                 }
                             }
@@ -631,6 +682,72 @@ impl App {
         let _ = ctx;
     }
 
+    /// Final standings after Final Jeopardy: PLAY AGAIN keeps the same teams.
+    fn show_jeopardy_standings(&mut self, ui: &mut egui::Ui, start: f64) {
+        let mut players = self.jeopardy_board.as_ref().map(|b| b.players.clone()).unwrap_or_default();
+        players.sort_by(|a, b| b.1.cmp(&a.1));
+        let standings: Vec<kit::Standing> = players
+            .iter()
+            .map(|(n, s)| kit::Standing { name: n.clone(), score: kit::money(*s), negative: *s < 0 })
+            .collect();
+        let top = players.first().map(|p| p.1).unwrap_or(0);
+        let stats = [
+            kit::Stat { value: kit::money(top), label: "winning total" },
+            kit::Stat { value: players.len().to_string(), label: if players.len() == 1 { "player" } else { "teams" } },
+        ];
+        match kit::round_complete(ui, "Jeopardy!", &standings, &stats, start) {
+            kit::SummaryAction::Restart => {
+                if let Some(config) = self.jeopardy_config.clone() {
+                    self.mp.new_game(self.server.as_deref());
+                    self.start_jeopardy(config);
+                }
+            }
+            kit::SummaryAction::Quit => {
+                self.screen = Screen::Home;
+                self.jeopardy_board = None;
+                self.jeopardy_over = None;
+            }
+            kit::SummaryAction::None => {}
+        }
+    }
+
+    /// (key, sweep label) for the visible view. DD / Final bring their own band,
+    /// so `update` skips the sweep for them.
+    fn view_identity(&self) -> (&'static str, &'static str) {
+        match self.screen {
+            Screen::Home => ("home", ""),
+            Screen::JeopardySetup => ("setup", "JEOPARDY!"),
+            Screen::Jeopardy if self.jeopardy_over.is_some() => ("standings", ""),
+            Screen::Jeopardy => match self.jeopardy_overlay {
+                Some(JeopardyOverlay::Clue(_)) => ("clue", ""),
+                Some(JeopardyOverlay::DailyDouble(_)) => ("dd", ""),
+                Some(JeopardyOverlay::Final(_)) => ("final", ""),
+                None => ("board", "JEOPARDY!"),
+            },
+            Screen::Trivia => ("trivia", "TRIVIA"),
+            Screen::Quizbowl => ("quizbowl", "QUIZBOWL"),
+            Screen::Mix => ("mix", "MIX"),
+            Screen::Lobby => ("lobby", "LOBBY"),
+            Screen::DevMenu => ("dev", ""),
+        }
+    }
+
+    /// Mark a board tile used and open its clue (or Daily Double) overlay.
+    fn open_clue(&mut self, col: usize, row: usize) {
+        let Some(board) = self.jeopardy_board.as_mut() else { return };
+        if board.used.get(col).and_then(|c| c.get(row)).copied().unwrap_or(true) {
+            return;
+        }
+        let Some(clue) = board.categories.get(col).and_then(|(_, c)| c.get(row)).cloned() else { return };
+        board.used[col][row] = true;
+        let active_score = board.active_score();
+        self.jeopardy_overlay = Some(if self.daily_doubles.contains(&(col, row)) {
+            JeopardyOverlay::DailyDouble(DailyDoubleScreen::new(clue, active_score))
+        } else {
+            JeopardyOverlay::Clue(ClueScreen::new(clue))
+        });
+    }
+
     fn update_quizbowl(&mut self, ui: &mut egui::Ui, ctx: &Context) {
         use crate::screens::quizbowl::bonus::BonusAction;
         use crate::screens::quizbowl::tossup::TossupAction;
@@ -658,6 +775,12 @@ impl App {
             return;
         }
 
+        let phones: Vec<(String, i32)> = self.server.as_ref()
+            .map(|s| s.players().into_iter().map(|p| (p.name, p.score)).collect())
+            .unwrap_or_default();
+        if let Some(qb) = self.quizbowl.as_mut() {
+            qb.phones = phones;
+        }
         let action = self.quizbowl.as_mut().and_then(|qb| qb.show(ui, dt));
         match action {
             Some(TossupAction::Next) => self.next_tossup(ctx.clone()),
@@ -679,50 +802,127 @@ impl App {
 
     fn update_lobby(&mut self, ui: &mut egui::Ui, ctx: &Context) {
         let players = self.server.as_ref().map(|s| s.players()).unwrap_or_default();
-        if let Some(ref mut lobby) = self.lobby {
-            match lobby.show(ui, &players) {
-                Some(LobbyAction::Back) => {
-                    self.screen = Screen::Home;
-                    self.lobby = None;
+        let action = self.lobby.as_mut().and_then(|lobby| lobby.show(ui, &players));
+        if let Some(action) = action {
+            self.run_lobby_action(action, ctx);
+        }
+    }
+
+    /// Start the phone server (and its lobby screen) if it isn't running yet.
+    /// On failure the lobby shows why, and the next TEAMS click retries.
+    fn ensure_server(&mut self, ctx: &Context) {
+        if self.server.is_some() {
+            return;
+        }
+        match GameServer::start(7777, &self.rt) {
+            Ok(srv) => {
+                srv.set_repaint_ctx(ctx);
+                let mut lobby = LobbyScreen::new(&srv.url());
+                if !srv.lan_reachable() {
+                    lobby.warning = Some("No Wi-Fi or LAN address found: phones can't reach this computer.".into());
                 }
-                Some(LobbyAction::StartTrivia(level)) => {
-                    self.mp_trivia_last_q = -1;
-                    self.start_trivia(ctx.clone(), level);
-                    self.screen = Screen::Trivia;
+                self.lobby = Some(lobby);
+                self.server = Some(srv);
+                self.server_error = None;
+            }
+            Err(e) => {
+                let mut lobby = LobbyScreen::new("");
+                lobby.warning = Some(e.clone());
+                self.lobby = Some(lobby);
+                self.server_error = Some(e);
+            }
+        }
+    }
+
+    /// Home's START. Solo games begin immediately; team games use the phones on
+    /// the couch, or open the lobby to wait for some if nobody has joined.
+    fn start_from_home(&mut self, mode: LobbyMode, level: u8, solo: bool, ctx: &Context) {
+        if !solo {
+            self.ensure_server(ctx);
+            let nobody = self.server.as_ref().is_none_or(|s| s.players().is_empty());
+            let action = match mode {
+                LobbyMode::Trivia => LobbyAction::StartTrivia(level),
+                LobbyMode::Quizbowl => LobbyAction::StartQuizbowl(level),
+                LobbyMode::Jeopardy => LobbyAction::StartJeopardy,
+                LobbyMode::Mix => LobbyAction::StartMix(level),
+            };
+            if nobody {
+                if let Some(lobby) = self.lobby.as_mut() {
+                    lobby.mode = mode;
+                    lobby.level = level;
                 }
-                Some(LobbyAction::StartQuizbowl(level)) => {
-                    self.quizbowl_level = level;
-                    self.quizbowl = None;
-                    self.quizbowl_bonus = None;
-                    self.recent_qb_categories.clear();
-                    self.mp_qb_last_chars = 0;
-                    self.start_quizbowl(ctx.clone());
-                    self.screen = Screen::Quizbowl;
+                self.screen = Screen::Lobby;
+            } else {
+                self.run_lobby_action(action, ctx);
+            }
+            return;
+        }
+        self.mp.new_game(self.server.as_deref());
+        self.mp.jeopardy.player_ids.clear();
+        match mode {
+            LobbyMode::Jeopardy => {
+                self.start_jeopardy(JeopardyConfig { mode: JeopardyMode::Solo, team_count: 1, team_names: vec![] });
+                self.screen = Screen::Jeopardy;
+            }
+            LobbyMode::Trivia => {
+                self.start_trivia(ctx.clone(), level);
+                self.screen = Screen::Trivia;
+            }
+            LobbyMode::Quizbowl => {
+                self.quizbowl_level = level;
+                self.quizbowl = None;
+                self.quizbowl_bonus = None;
+                self.recent_qb_categories.clear();
+                self.start_quizbowl(ctx.clone());
+                self.screen = Screen::Quizbowl;
+            }
+            LobbyMode::Mix => {
+                self.start_mix(ctx.clone(), level);
+                self.screen = Screen::Mix;
+            }
+        }
+    }
+
+    fn run_lobby_action(&mut self, action: LobbyAction, ctx: &Context) {
+        if !matches!(action, LobbyAction::Back) {
+            self.mp.new_game(self.server.as_deref());
+        }
+        match action {
+            LobbyAction::Back => {
+                self.screen = Screen::Home;
+            }
+            LobbyAction::StartTrivia(level) => {
+                self.start_trivia(ctx.clone(), level);
+                self.screen = Screen::Trivia;
+            }
+            LobbyAction::StartQuizbowl(level) => {
+                self.quizbowl_level = level;
+                self.quizbowl = None;
+                self.quizbowl_bonus = None;
+                self.recent_qb_categories.clear();
+                self.start_quizbowl(ctx.clone());
+                self.screen = Screen::Quizbowl;
+            }
+            LobbyAction::StartJeopardy => {
+                {
+                    let phone_players = self.server.as_ref().map(|s| s.players()).unwrap_or_default();
+                    let config = if phone_players.is_empty() {
+                        JeopardyConfig { mode: JeopardyMode::Solo, team_count: 1, team_names: vec![] }
+                    } else {
+                        JeopardyConfig {
+                            mode: JeopardyMode::Teams,
+                            team_count: phone_players.len() as u8,
+                            team_names: phone_players.iter().map(|p| p.name.clone()).collect(),
+                        }
+                    };
+                    self.mp.jeopardy.player_ids = phone_players.iter().map(|p| p.id).collect();
+                    self.start_jeopardy(config);
+                    self.screen = Screen::Jeopardy;
                 }
-                Some(LobbyAction::StartJeopardy) => {
-                    if self.jeopardy_store.is_some() {
-                        let phone_players = self.server.as_ref().map(|s| s.players()).unwrap_or_default();
-                        let config = if phone_players.is_empty() {
-                            JeopardyConfig { mode: JeopardyMode::Solo, team_count: 1, team_names: vec![] }
-                        } else {
-                            JeopardyConfig {
-                                mode: JeopardyMode::Teams,
-                                team_count: phone_players.len() as u8,
-                                team_names: phone_players.iter().map(|p| p.name.clone()).collect(),
-                            }
-                        };
-                        self.start_jeopardy(config);
-                        self.mp_j_board_dirty = true;
-                        self.mp_j_clue_broadcast = false;
-                        self.screen = Screen::Jeopardy;
-                    }
-                }
-                Some(LobbyAction::StartMix(level)) => {
-                    self.mp_trivia_last_q = -1;
-                    self.start_mix(ctx.clone(), level);
-                    self.screen = Screen::Mix;
-                }
-                None => {}
+            }
+            LobbyAction::StartMix(level) => {
+                self.start_mix(ctx.clone(), level);
+                self.screen = Screen::Mix;
             }
         }
     }
@@ -736,6 +936,7 @@ impl App {
                 self.mix = None;
             }
             Some(MixSignal::Restart) => {
+                self.mp.new_game(self.server.as_deref());
                 let level = self.mix_level;
                 self.start_mix(ctx.clone(), level);
             }
@@ -749,198 +950,249 @@ impl App {
     // ── Multiplayer tick: broadcast state + drain phone inputs ────────────────
 
     fn tick_multiplayer(&mut self, ctx: &Context) {
-        let server = match self.server.as_ref() {
-            Some(s) => Arc::clone(s),
-            None => return,
-        };
+        let Some(server) = self.server.clone() else { return };
         let now = ctx.input(|i| i.time);
 
+        // Leaving a game for Home/Lobby: park phones on a waiting screen so they
+        // don't sit on a stale question.
+        if self.mp.last_screen.as_ref() != Some(&self.screen) {
+            let was_game = matches!(
+                self.mp.last_screen,
+                Some(Screen::Trivia | Screen::Quizbowl | Screen::Jeopardy | Screen::Mix)
+            );
+            if was_game && matches!(self.screen, Screen::Home | Screen::Lobby) {
+                server.broadcast(&ServerMsg::Waiting { msg: "Round over — waiting for the host".into() });
+            }
+            self.mp.last_screen = Some(self.screen.clone());
+        }
+
         match self.screen {
-            Screen::Trivia => self.mp_tick_trivia(&server, now),
-            Screen::Quizbowl => self.mp_tick_quizbowl(&server, now, ctx),
+            Screen::Trivia => self.mp.trivia.tick(&server, self.trivia.as_ref()),
+            Screen::Quizbowl if self.quizbowl_bonus.is_some() => {
+                self.mp.park(&server, "Bonus round — watch the TV");
+            }
+            Screen::Quizbowl => {
+                self.mp.unpark();
+                self.mp.quizbowl.tick(&server, self.quizbowl.as_mut(), now);
+            }
             Screen::Jeopardy => self.mp_tick_jeopardy(&server, now),
-            _ => {}
-        }
-    }
-
-    fn mp_tick_trivia(&mut self, server: &GameServer, now: f64) {
-        use crate::server::protocol::ClientMsg;
-        let trivia = match self.trivia.as_ref() {
-            Some(t) if !t.loading && t.error.is_none() && t.current_idx < t.questions.len() => t,
-            _ => return,
-        };
-        let q_idx = trivia.current_idx as i64;
-
-        // Broadcast whenever we advance to a new question
-        if q_idx != self.mp_trivia_last_q {
-            self.mp_trivia_last_q = q_idx;
-            let q = &trivia.questions[trivia.current_idx];
-            let answers = q.shuffled_answers();
-            let options: Vec<String> = answers.iter().map(|(s, _)| s.clone()).collect();
-            server.broadcast(&ServerMsg::TriviaQuestion {
-                text: q.question.clone(),
-                options,
-            });
-        }
-
-        // Handle phone answers
-        while let Some(input) = server.pop_input() {
-            if let ClientMsg::AnswerIdx { idx } = input.msg {
-                if let Some(trivia) = self.trivia.as_ref() {
-                    if trivia.current_idx < trivia.questions.len() && trivia.selected.is_none() {
-                        let q = &trivia.questions[trivia.current_idx];
-                        let answers = q.shuffled_answers();
-                        let correct = answers.get(idx).map(|(_, c)| *c).unwrap_or(false);
-                        let correct_idx = answers.iter().position(|(_, c)| *c).unwrap_or(0);
-                        let delta = if correct { 10 } else { 0 };
-                        if correct {
-                            server.add_score(input.player_id, delta);
-                        }
-                        let scorer = if correct { server.player_name(input.player_id) } else { None };
-                        server.broadcast(&ServerMsg::TriviaReveal { correct_idx, scorer, delta });
-                        let _ = now;
+            Screen::Mix => {
+                let Some(mix) = self.mix.as_mut() else { return multiplayer::drain(&server) };
+                if matches!(mix.phase, MixPhase::Trivia | MixPhase::Quizbowl | MixPhase::JeopardyPhase) {
+                    self.mp.unpark();
+                }
+                match mix.phase {
+                    MixPhase::Trivia => self.mp.trivia.tick(&server, mix.trivia.as_ref()),
+                    MixPhase::Quizbowl => self.mp.quizbowl.tick(&server, mix.quizbowl.as_mut(), now),
+                    MixPhase::JeopardyPhase => self.mp.mix_clue.tick(&server, mix.current_clue_mut(), now),
+                    MixPhase::Summary => self.mp.park(&server, "Mix complete — scores are on the TV"),
+                    MixPhase::Loading | MixPhase::QuizbowlLoading => {
+                        self.mp.park(&server, "Loading the next round…")
                     }
                 }
             }
+            _ => multiplayer::drain(&server),
         }
     }
 
-    fn mp_tick_quizbowl(&mut self, server: &GameServer, now: f64, _ctx: &Context) {
-        use crate::server::protocol::ClientMsg;
-        let qb = match self.quizbowl.as_ref() {
-            Some(q) if !q.loading => q,
-            _ => return,
-        };
+    fn mp_tick_jeopardy(&mut self, server: &GameServer, now: f64) {
+        use crate::screens::jeopardy::clue::ClueState;
+        use crate::screens::jeopardy::final_jeopardy::FinalPhase;
 
-        // Broadcast reading state when chars change (throttle: every 4 chars)
-        let chars = qb.chars_revealed;
-        let is_reading = matches!(qb.state, TossupState::Reading | TossupState::FinishedReading { .. });
-        if is_reading && chars.saturating_sub(self.mp_qb_last_chars) >= 4 {
-            self.mp_qb_last_chars = chars;
-            let text: String = qb.tossup.question.chars().take(chars).collect();
-            let can_buzz = qb.mp_buzzed_name.is_none();
-            server.broadcast(&ServerMsg::QbReading { text, can_buzz });
-        }
+        let Some(board) = self.jeopardy_board.as_ref() else { return multiplayer::drain(server) };
+        let js = &mut self.mp.jeopardy;
 
-        // Handle phone inputs
-        while let Some(input) = server.pop_input() {
-            match input.msg {
-                ClientMsg::Buzz => {
-                    let qb = match self.quizbowl.as_mut() {
-                        Some(q) if q.mp_buzzed_name.is_none()
-                            && matches!(q.state, TossupState::Reading | TossupState::FinishedReading { .. }) => q,
-                        _ => continue,
-                    };
-                    let name = server.player_name(input.player_id).unwrap_or_default();
-                    qb.mp_buzzed_name = Some(name.clone());
-                    qb.state = TossupState::BuzzedIn { answer_input: String::new() };
-                    server.broadcast(&ServerMsg::QbBuzzed { player_name: name, is_you: false });
-                    // Broadcast "is_you: true" to the buzzer separately — we do this via
-                    // per-player messaging which the broadcast channel doesn't support.
-                    // For MVP: the buzzer's phone sees QbBuzzed with is_you=true from
-                    // the first broadcast (is_you field is currently unused by our broadcast).
-                    // TODO: targeted messages for the buzzer.
-                }
-                ClientMsg::AnswerText { text } => {
-                    let qb = match self.quizbowl.as_mut() {
-                        Some(q) if q.mp_buzzed_name.is_some() => q,
-                        _ => continue,
-                    };
-                    let (correct, delta) = qb.phone_answer(&text, now);
-                    server.add_score(input.player_id, delta);
-                    let scorer = if correct { server.player_name(input.player_id) } else { None };
-                    let answer = qb.tossup.answer.clone();
-                    server.broadcast(&ServerMsg::QbResult { correct, answer, scorer, delta });
-                    self.mp_qb_last_chars = 0;
-                }
-                _ => {}
+        // The board is the score ledger; mirror it onto the phone seats.
+        for (i, &id) in js.player_ids.iter().enumerate() {
+            if let Some((_, score)) = board.players.get(i) {
+                server.set_score(id, *score);
             }
         }
-    }
+        let active_id = js.player_ids.get(board.active).copied();
+        let active_name = board.players.get(board.active).map(|(n, _)| n.clone()).unwrap_or_default();
 
-    fn mp_tick_jeopardy(&mut self, server: &GameServer, _now: f64) {
-        use crate::server::protocol::ClientMsg;
-        use crate::api::jeopardy::check_answer;
-
-        // Broadcast board state when dirty (no overlay)
-        if self.jeopardy_overlay.is_none() && self.mp_j_board_dirty {
-            self.mp_j_board_dirty = false;
-            self.mp_j_clue_broadcast = false;
-            if let Some(board) = &self.jeopardy_board {
-                let n_cols = board.categories.len();
-                let n_rows = board.categories.first().map(|(_, v)| v.len()).unwrap_or(5);
-                let categories: Vec<String> = board.categories.iter().map(|(n, _)| n.clone()).collect();
-                let values: Vec<Vec<i32>> = board.categories.iter()
-                    .map(|(_, clues)| clues.iter().map(|c| c.value).collect())
-                    .collect();
-                let used: Vec<Vec<bool>> = (0..n_cols)
-                    .map(|c| (0..n_rows).map(|r| board.used[c][r]).collect())
-                    .collect();
-                let scores: Vec<(String, i32)> = board.players.clone();
-                let active_player = board.players.get(board.active)
-                    .map(|(n, _)| n.clone())
-                    .unwrap_or_default();
-                server.broadcast(&ServerMsg::JeopardyBoard {
-                    categories, values, used, scores, active_player,
-                    is_your_turn: false, // phones observe only in MVP
-                });
+        if self.jeopardy_over.is_some() {
+            if !js.over_sent {
+                js.over_sent = true;
+                let winner = board.players.iter().max_by_key(|p| p.1).map(|p| p.0.clone()).unwrap_or_default();
+                server.broadcast(&ServerMsg::Waiting { msg: format!("{winner} wins! Final standings are on the TV") });
             }
+            return multiplayer::drain(server);
         }
 
-        // Broadcast clue when overlay just appeared
-        if self.jeopardy_overlay.is_some() && !self.mp_j_clue_broadcast {
-            self.mp_j_clue_broadcast = true;
-            match &self.jeopardy_overlay {
-                Some(JeopardyOverlay::Clue(cs)) => {
-                    server.broadcast(&ServerMsg::JeopardyClue {
-                        category: cs.clue.category.clone(),
-                        value: cs.clue.value,
-                        text: cs.clue.question.clone(),
-                        is_you_answer: false,
+        match &self.jeopardy_overlay {
+            None => {
+                if !js.board_sent {
+                    js.board_sent = true;
+                    js.clue_sent = false;
+                    js.dd_clue_sent = false;
+                    js.result_sent = false;
+                    js.final_clue_sent = false;
+                    let categories: Vec<String> = board.categories.iter().map(|(n, _)| n.clone()).collect();
+                    let values: Vec<Vec<i32>> = board.categories.iter()
+                        .map(|(_, clues)| clues.iter().map(|c| c.value).collect())
+                        .collect();
+                    let used: Vec<Vec<bool>> = board.categories.iter().enumerate()
+                        .map(|(c, (_, clues))| (0..clues.len()).map(|r| board.used[c][r]).collect())
+                        .collect();
+                    let scores = board.players.clone();
+                    server.send_each(|id| ServerMsg::JeopardyBoard {
+                        categories: categories.clone(),
+                        values: values.clone(),
+                        used: used.clone(),
+                        scores: scores.clone(),
+                        active_player: active_name.clone(),
+                        is_your_turn: Some(id) == active_id,
                     });
                 }
-                Some(JeopardyOverlay::DailyDouble(dd)) => {
-                    let active = self.jeopardy_board.as_ref()
-                        .and_then(|b| b.players.get(b.active))
-                        .map(|(n, _)| n.clone())
-                        .unwrap_or_default();
-                    let max_wager = dd.current_score.max(1000);
-                    server.broadcast(&ServerMsg::JeopardyDd {
-                        category: dd.clue.category.clone(),
-                        value: dd.clue.value,
-                        max_wager,
-                        is_you_answer: false,
-                        active_player: active,
-                    });
-                }
-                _ => {}
             }
-        }
-
-        // When overlay clears, mark board dirty
-        if self.jeopardy_overlay.is_none() && self.mp_j_clue_broadcast {
-            self.mp_j_board_dirty = true;
-        }
-
-        // Handle phone answers for Jeopardy
-        while let Some(input) = server.pop_input() {
-            if let ClientMsg::AnswerText { text } = input.msg {
-                let now = 0.0f64; // approximate
-                match self.jeopardy_overlay {
-                    Some(JeopardyOverlay::Clue(ref mut cs))
-                        if matches!(cs.state, crate::screens::jeopardy::clue::ClueState::ShowQuestion) =>
-                    {
-                        let correct = check_answer(&text, &cs.clue.answer);
-                        let answer = cs.clue.answer.clone();
-                        let delta = if correct { cs.clue.value } else { -cs.clue.value };
-                        server.add_score(input.player_id, delta);
-                        server.broadcast(&ServerMsg::JeopardyResult { correct, answer, delta });
-                        cs.set_phone_answer(&text, now);
-                        self.mp_j_board_dirty = true;
+            Some(overlay) => {
+                js.board_sent = false;
+                // The overlay just opened.
+                if !js.clue_sent {
+                    js.clue_sent = true;
+                    match overlay {
+                        JeopardyOverlay::Clue(cs) => server.send_each(|id| ServerMsg::JeopardyClue {
+                            category: cs.clue.category.clone(),
+                            value: cs.clue.value,
+                            text: cs.clue.question.clone(),
+                            is_you_answer: Some(id) == active_id,
+                            active_player: active_name.clone(),
+                        }),
+                        JeopardyOverlay::DailyDouble(dd) => server.send_each(|id| ServerMsg::JeopardyDd {
+                            category: dd.clue.category.clone(),
+                            value: dd.clue.value,
+                            max_wager: dd.max_wager(),
+                            is_you_answer: Some(id) == active_id,
+                            active_player: active_name.clone(),
+                        }),
+                        JeopardyOverlay::Final(f) => server.send_each(|id| {
+                            let seat = js.seat(id);
+                            ServerMsg::JeopardyFinalWager {
+                                category: f.clue.category.clone(),
+                                max_wager: seat.map(|i| f.max_wager(i)).unwrap_or(0),
+                                can_play: seat.is_some_and(|i| f.can_play(i)),
+                            }
+                        }),
+                    }
+                }
+                match overlay {
+                    // Daily Double: once the wager is locked, show the clue to everyone.
+                    JeopardyOverlay::DailyDouble(dd) if dd.wager.is_some() && !js.dd_clue_sent => {
+                        js.dd_clue_sent = true;
+                        server.send_each(|id| ServerMsg::JeopardyClue {
+                            category: dd.clue.category.clone(),
+                            value: dd.wager.unwrap_or(0),
+                            text: dd.clue.question.clone(),
+                            is_you_answer: Some(id) == active_id,
+                            active_player: active_name.clone(),
+                        });
+                    }
+                    JeopardyOverlay::Final(f) if f.phase != FinalPhase::Wager && !js.final_clue_sent => {
+                        js.final_clue_sent = true;
+                        server.send_each(|id| ServerMsg::JeopardyFinalClue {
+                            category: f.clue.category.clone(),
+                            text: f.clue.question.clone(),
+                            can_answer: js.seat(id).is_some_and(|i| f.can_play(i)),
+                        });
                     }
                     _ => {}
                 }
+                // Verdicts, however they were reached (phone, typed, or host-judged).
+                if !js.result_sent {
+                    match overlay {
+                        JeopardyOverlay::Clue(cs) => {
+                            if let ClueState::Answered { correct } = cs.state {
+                                js.result_sent = true;
+                                let delta = if correct { cs.clue.value } else { -cs.clue.value };
+                                server.broadcast(&ServerMsg::JeopardyResult { correct, answer: cs.clue.answer.clone(), delta });
+                            }
+                        }
+                        JeopardyOverlay::DailyDouble(dd) => {
+                            if let Some(correct) = dd.answered {
+                                js.result_sent = true;
+                                let w = dd.wager.unwrap_or(0);
+                                let delta = if correct { w } else { -w };
+                                server.broadcast(&ServerMsg::JeopardyResult { correct, answer: dd.clue.answer.clone(), delta });
+                            }
+                        }
+                        JeopardyOverlay::Final(f) if f.phase == FinalPhase::Result => {
+                            js.result_sent = true;
+                            server.send_each(|id| match js.seat(id) {
+                                Some(i) if f.can_play(i) => ServerMsg::JeopardyResult {
+                                    correct: matches!(f.responses[i], Some((_, true))),
+                                    answer: f.clue.answer.clone(),
+                                    delta: f.delta(i),
+                                },
+                                _ => ServerMsg::Waiting { msg: format!("The answer: {}", f.clue.answer) },
+                            });
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
+
+        // Phone inputs. Final takes every seat; otherwise only the active seat may act.
+        while let Some(input) = server.pop_input() {
+            if let Some(JeopardyOverlay::Final(f)) = self.jeopardy_overlay.as_mut() {
+                if let Some(seat) = self.mp.jeopardy.seat(input.player_id) {
+                    match input.msg {
+                        ClientMsg::Wager { amount } => f.phone_wager(seat, amount),
+                        ClientMsg::AnswerText { text } => f.phone_answer(seat, &text),
+                        _ => {}
+                    }
+                }
+                continue;
+            }
+            if Some(input.player_id) != active_id {
+                continue;
+            }
+            match input.msg {
+                ClientMsg::PickClue { col, row } if self.jeopardy_overlay.is_none() => {
+                    self.open_clue(col, row);
+                }
+                ClientMsg::Wager { amount } => {
+                    if let Some(JeopardyOverlay::DailyDouble(dd)) = self.jeopardy_overlay.as_mut() {
+                        dd.set_phone_wager(amount);
+                    }
+                }
+                ClientMsg::AnswerText { text } => match self.jeopardy_overlay.as_mut() {
+                    Some(JeopardyOverlay::Clue(cs)) => cs.set_phone_answer(&text, now),
+                    Some(JeopardyOverlay::DailyDouble(dd)) => {
+                        dd.set_phone_answer(&text, now);
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Debug-only: `IT_SHOT=out.png` saves a screenshot ~1.5s after launch and quits,
+/// so UI work can be checked without clicking through (pair with IT_DEV/IT_SCREEN).
+#[cfg(debug_assertions)]
+fn dev_screenshot(ctx: &Context) {
+    let Ok(path) = std::env::var("IT_SHOT") else { return };
+    let delay: f64 = std::env::var("IT_SHOT_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(1.5);
+    let requested = ctx.data(|d| d.get_temp::<bool>(egui::Id::new("dev_shot_req"))).unwrap_or(false);
+    if !requested && ctx.input(|i| i.time) > delay {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("dev_shot_req"), true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+    }
+    let shot = ctx.input(|i| {
+        i.raw.events.iter().find_map(|e| match e {
+            egui::Event::Screenshot { image, .. } => Some(image.clone()),
+            _ => None,
+        })
+    });
+    if let Some(img) = shot {
+        let [w, h] = img.size;
+        let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+        if let Some(buf) = image::RgbaImage::from_raw(w as u32, h as u32, bytes) {
+            let _ = buf.save(&path);
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 }
