@@ -1,8 +1,8 @@
-use egui::{Align2, Pos2};
+//! Daily Double — "04 Daily Double" in the Roster hi-fi.
+
 use crate::api::jeopardy::{check_answer, Clue};
-use crate::screens::jeopardy::board::money;
-use crate::screens::kit;
-use crate::theme::{self, ACCENT_SOFT, GOLD, GREEN_CORRECT, INK_DIM, RED_WRONG};
+use crate::screens::jeopardy::wager;
+use crate::screens::kit::{self, Canvas, Texture};
 
 pub enum DailyDoubleAction {
     Done { winnings: i32 },
@@ -15,6 +15,9 @@ pub struct DailyDoubleScreen {
     pub wager: Option<i32>,
     pub answer_input: String,
     pub answered: Option<bool>,
+    /// Teams + the wagering one, copied from the board by App for the roster.
+    pub teams: Vec<(String, i32)>,
+    pub active: usize,
     enter_start: f64,
     result_start: f64,
     focus_field: bool,
@@ -29,6 +32,8 @@ impl DailyDoubleScreen {
             wager: None,
             answer_input: String::new(),
             answered: None,
+            teams: Vec::new(),
+            active: 0,
             enter_start: -1.0,
             result_start: -10.0,
             focus_field: true,
@@ -36,87 +41,49 @@ impl DailyDoubleScreen {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<DailyDoubleAction> {
-        kit::ambient(ui.ctx());
         let now = ui.input(|i| i.time);
         if self.enter_start < 0.0 {
             self.enter_start = now;
         }
-        let ey = kit::enter_offset(ui, self.enter_start);
-        ui.ctx().request_repaint();
-
-        let avail = ui.available_size();
-        let cx = avail.x / 2.0;
-        let painter = ui.painter().clone();
+        let c = Canvas::new(ui.ctx());
+        let enter = kit::since(ui, self.enter_start, 0.5);
         let mut action = None;
-        let max_wager = self.current_score.max(1000);
+        let max_wager = self.max_wager();
+        let team = self.teams.get(self.active).map(|(n, _)| n.clone()).unwrap_or_else(|| "You".into());
 
-        let mut y = ((avail.y - 380.0) / 2.0).max(40.0) + ey;
-
-        // -- Splash (.it-splash) with pulsing halo ----------------------------
-        let pulse = 0.5 + 0.5 * ((now as f32) / 2.6 * std::f32::consts::TAU).sin();
-        painter.circle_filled(
-            Pos2::new(cx, y + 4.0),
-            150.0,
-            ACCENT_SOFT.gamma_multiply(0.12 + 0.10 * pulse),
-        );
-        painter.text(Pos2::new(cx, y + 4.0), Align2::CENTER_CENTER, "DAILY DOUBLE!", theme::spectral(52.0), GOLD);
-        y += 44.0;
-        painter.text(
-            Pos2::new(cx, y),
-            Align2::CENTER_CENTER,
-            self.clue.category.to_uppercase(),
-            theme::mono(12.0),
-            GOLD,
-        );
-        y += 28.0;
-
-        if self.wager.is_none() {
-            // -- Wager phase --------------------------------------------------
-            painter.text(
-                Pos2::new(cx, y),
-                Align2::CENTER_CENTER,
-                format!("SCORE  {}  ·  MAX WAGER  {}", money(self.current_score), money(max_wager)),
-                theme::mono(12.0),
-                INK_DIM,
-            );
-            y += 30.0;
-            if kit::input_row(ui, cx, y + 21.0, "YOUR WAGER  $", &mut self.wager_input, 160.0, self.focus_field) {
-                self.confirm_wager(max_wager);
+        match (self.wager, self.answered) {
+            (None, _) => {
+                kit::backdrop(ui.ctx(), None);
+                wager::band(ui, &c, "DAILY DOUBLE", 1.0, enter);
+                let who = if self.teams.len() > 1 { format!("{} WAGER", team.to_uppercase()) } else { "YOUR WAGER".into() };
+                let heading = format!("{} · {who}", self.clue.category.to_uppercase());
+                if let Some(w) = wager::wager_panel(ui, &c, &heading, &mut self.wager_input, 5, max_wager, self.focus_field, "dd") {
+                    self.wager = Some(w);
+                    self.focus_field = true;
+                }
+                self.focus_field = false;
+                wager::team_line(ui, &c, &team, self.current_score, "ONLY YOU PLAY THIS ONE");
             }
-            self.focus_field = false;
-            y += 60.0;
-            if kit::centered_primary(ui, cx, y, "Confirm wager →") {
-                self.confirm_wager(max_wager);
+            (Some(w), None) => {
+                kit::backdrop(ui.ctx(), Some(Texture::Grid));
+                wager::band(ui, &c, &format!("DAILY DOUBLE · {}", kit::money(w)), 0.0, 1.0);
+                if wager::question(ui, &c, &self.clue.category, &self.clue.question, &mut self.answer_input, self.focus_field, "dd") {
+                    self.submit(now);
+                }
+                self.focus_field = false;
+                wager::roster(ui, &c, &self.teams, self.active);
             }
-        } else if self.answered.is_none() {
-            // -- Question phase ----------------------------------------------
-            let qh = kit::centered_question(ui, cx, y, &self.clue.question, 26.0, 640.0_f32.min(avail.x - 80.0));
-            y += qh + 26.0;
-            if kit::input_row(ui, cx, y + 21.0, "What is", &mut self.answer_input, 300.0, self.focus_field) {
-                self.submit(now);
-            }
-            self.focus_field = false;
-            y += 60.0;
-            if kit::centered_primary(ui, cx, y, "Submit") {
-                self.submit(now);
-            }
-        } else {
-            // -- Result phase -------------------------------------------------
-            let correct = self.answered.unwrap();
-            let wager = self.wager.unwrap();
-            let (label, color) = if correct { ("CORRECT", GREEN_CORRECT) } else { ("INCORRECT", RED_WRONG) };
-            let delta = Some(format!("{}{}", if correct { "+" } else { "-" }, money(wager)));
-            kit::overlay_verdict(ui, cx, y + 22.0, self.result_start, label, color, delta);
-            y += 90.0;
-            kit::answer_reveal(ui, cx, y, "CORRECT RESPONSE", &self.clue.answer);
-            y += 58.0;
-            if kit::centered_primary(ui, cx, y, "Back to board →") {
-                action = Some(DailyDoubleAction::Done {
-                    winnings: if correct { wager } else { -wager },
-                });
+            (Some(w), Some(correct)) => {
+                kit::backdrop(ui.ctx(), Some(Texture::Grid));
+                wager::band(ui, &c, "DAILY DOUBLE", 0.0, 1.0);
+                let delta = if correct { w } else { -w };
+                let since = kit::since(ui, self.result_start, 0.4);
+                if wager::result(ui, &c, since, correct, delta, &self.clue.answer, None, "Back to board", "dd") {
+                    action = Some(DailyDoubleAction::Done { winnings: delta });
+                }
+                wager::roster(ui, &c, &self.teams, self.active);
             }
         }
-
         action
     }
 
@@ -131,5 +98,31 @@ impl DailyDoubleScreen {
         let correct = check_answer(&self.answer_input, &self.clue.answer);
         self.answered = Some(correct);
         self.result_start = now;
+    }
+
+    /// The larger of the current score and the round's top clue value.
+    pub fn max_wager(&self) -> i32 {
+        let top = if self.clue.round == "Double Jeopardy!" { 2000 } else { 1000 };
+        self.current_score.max(top)
+    }
+
+    /// Called by App when the wagering phone player locks in a wager.
+    pub fn set_phone_wager(&mut self, amount: i32) {
+        if self.wager.is_none() {
+            self.wager_input = amount.to_string();
+            self.confirm_wager(self.max_wager());
+        }
+    }
+
+    /// Called by App when the wagering phone player submits a response.
+    /// Judge a phone's response. Returns the verdict only for the first
+    /// response, so a resent answer can't be scored twice.
+    pub fn set_phone_answer(&mut self, text: &str, now: f64) -> Option<bool> {
+        if self.wager.is_some() && self.answered.is_none() {
+            self.answer_input = text.to_string();
+            self.submit(now);
+            return self.answered;
+        }
+        None
     }
 }

@@ -1,6 +1,6 @@
-use egui::{Align2, Pos2, Rect, Vec2};
-use crate::screens::kit;
-use crate::theme::{self, GOLD, INK_DIM, WHITE};
+use egui::{Align2, Key};
+use crate::screens::kit::{self, Btn, Canvas, TagStyle, Texture};
+use crate::theme::{self, INK, MUTED};
 
 #[derive(Clone, PartialEq)]
 pub enum JeopardyMode {
@@ -8,6 +8,7 @@ pub enum JeopardyMode {
     Teams,
 }
 
+#[derive(Clone)]
 pub struct JeopardyConfig {
     pub mode: JeopardyMode,
     pub team_count: u8,
@@ -31,60 +32,32 @@ impl Default for JeopardySetupScreen {
 
 impl JeopardySetupScreen {
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<SetupAction> {
-        kit::ambient(ui.ctx());
+        kit::backdrop(ui.ctx(), Some(Texture::Grid));
         let now = ui.input(|i| i.time);
         if self.enter_start < 0.0 {
             self.enter_start = now;
         }
-        let ey = kit::enter_offset(ui, self.enter_start);
-
-        let avail = ui.available_size();
-        let cx = avail.x / 2.0;
-        let painter = ui.painter().clone();
+        let c = Canvas::new(ui.ctx());
+        let p = ui.painter().clone();
+        kit::tag(&p, &c, c.p(80.0, 260.0), "SOLO", TagStyle::Gold, theme::TYPE_TAG);
+        p.text(c.p(76.0, 300.0), Align2::LEFT_TOP, "JEOPARDY!", c.cond(800, theme::TYPE_MODE_HERO), INK);
+        kit::wrapped(&p, c.p(80.0, 420.0), "Six categories, thirty clues, one Daily Double. Wrong answers cost you.",
+            c.barlow(500, theme::TYPE_BODY), MUTED, c.v(520.0), c.v(27.0));
         let mut action = None;
-
-        let content_h = 220.0;
-        let mut y = ((avail.y - content_h) / 2.0).max(30.0) + ey;
-
-        // -- Title ------------------------------------------------------------
-        painter.text(Pos2::new(cx, y + 19.0), Align2::CENTER_CENTER, "JEOPARDY!", theme::spectral(38.0), GOLD);
-        y += 42.0;
-        painter.text(Pos2::new(cx, y), Align2::CENTER_CENTER, "SOLO", theme::mono(12.0), INK_DIM);
-        y += 60.0;
-
-        // -- Start (primary) + Back (ghost) -----------------------------------
-        let pw = kit_measure(ui, "Start Game") + 44.0;
-        let gw = kit_measure(ui, "Back") + 44.0;
-        let lp = cx - (pw + 12.0 + gw) / 2.0;
-        let mut pc = child(ui, Rect::from_min_size(Pos2::new(lp, y), Vec2::new(pw, 42.0)));
-        if kit::primary_button(&mut pc, "Start Game").clicked() {
+        if kit::button(ui, &c, c.r(80.0, 490.0, 180.0, 58.0), "START GAME", Btn::Primary, "setup_start").clicked()
+            || ui.input(|i| i.key_pressed(Key::Enter))
+        {
             action = Some(SetupAction::Start(JeopardyConfig {
                 mode: JeopardyMode::Solo,
                 team_count: 1,
                 team_names: vec!["You".to_string()],
             }));
         }
-        let mut gc = child(ui, Rect::from_min_size(Pos2::new(lp + pw + 12.0, y), Vec2::new(gw, 42.0)));
-        if kit::ghost_button(&mut gc, "Back").clicked() {
+        if kit::button(ui, &c, c.r(272.0, 490.0, 110.0, 58.0), "BACK", Btn::Ghost, "setup_back").clicked()
+            || ui.input(|i| i.key_pressed(Key::Escape))
+        {
             action = Some(SetupAction::Back);
         }
-
         action
     }
-}
-
-
-fn kit_measure(ui: &egui::Ui, label: &str) -> f32 {
-    ui.painter()
-        .layout_no_wrap(label.to_string(), theme::plex_semibold(14.0), WHITE)
-        .size()
-        .x
-}
-
-fn child(ui: &mut egui::Ui, rect: Rect) -> egui::Ui {
-    ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    )
 }

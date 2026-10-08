@@ -2,7 +2,7 @@
 //! data so the UI can be evaluated without the API or playing through.
 //! Enabled by launching with the env var `IT_DEV=1`.
 
-use egui::{Align2, Pos2, Rect, RichText, Sense, Vec2};
+use egui::{Align2, Sense};
 
 use crate::api::jeopardy::Clue;
 use crate::api::opentdb::TriviaQuestion;
@@ -11,12 +11,15 @@ use crate::screens::quizbowl::bonus::BonusScreen;
 use crate::screens::jeopardy::board::{Board, BoardAction};
 use crate::screens::jeopardy::clue::{ClueScreen, ClueState};
 use crate::screens::jeopardy::daily_double::DailyDoubleScreen;
-use crate::screens::jeopardy::final_jeopardy::FinalJeopardy;
+use crate::screens::jeopardy::final_jeopardy::{FinalJeopardy, FinalPhase};
 use crate::screens::jeopardy::setup::{JeopardySetupScreen, SetupAction};
 use crate::screens::mix::{MixPhase, MixScreen, MixSignal};
+use crate::screens::kit;
+use crate::screens::lobby::{LobbyAction, LobbyScreen};
+use crate::server::protocol::PlayerInfo;
 use crate::screens::quizbowl::tossup::{TossupAction, TossupScreen, TossupState};
 use crate::screens::trivia::question::{TriviaAction, TriviaScreen};
-use crate::theme::{self, BLUE_MID, GOLD, INK_DIM, LINE, WHITE};
+use crate::theme::{GOLD, MUTED};
 
 /// A screen currently being previewed in the gallery.
 pub enum DevView {
@@ -29,6 +32,8 @@ pub enum DevView {
     DailyDouble(DailyDoubleScreen),
     Final(FinalJeopardy),
     Mix(MixScreen),
+    Lobby(LobbyScreen),
+    Standings,
 }
 
 pub struct DevMenu {
@@ -40,6 +45,14 @@ impl Default for DevMenu {
         // `IT_SCREEN=<key>` opens a screen directly (skips the gallery click).
         let view = std::env::var("IT_SCREEN").ok().and_then(|k| match k.as_str() {
             "trivia" => Some(DevView::Trivia(mock_trivia())),
+            "trivia-reveal" => {
+                let mut t = mock_trivia();
+                t.current_idx = 1;
+                t.score = 140;
+                t.streak = 2;
+                t.selected = Some(2);
+                Some(DevView::Trivia(t))
+            }
             "trivia-summary" => Some(DevView::Trivia(mock_trivia_summary())),
             "trivia-loading" => Some(DevView::Trivia(TriviaScreen::loading())),
             "qb" | "qb-reading" => Some(DevView::Quizbowl(mock_qb(QbPhase::Reading))),
@@ -51,27 +64,37 @@ impl Default for DevMenu {
             "setup" => Some(DevView::Setup(JeopardySetupScreen::default())),
             "setup-teams" => Some(DevView::Setup(JeopardySetupScreen::default())),
             "board" => Some(DevView::Board(mock_board())),
-            "clue" => Some(DevView::Clue(ClueScreen::new(mock_clue()))),
+            "clue" => Some(DevView::Clue(mock_clue_screen())),
             "clue-result" => {
-                let mut c = ClueScreen::new(mock_clue());
+                let mut c = mock_clue_screen();
                 c.state = ClueState::Answered { correct: true };
                 Some(DevView::Clue(c))
             }
-            "dd" => Some(DevView::DailyDouble(DailyDoubleScreen::new(mock_clue(), 2400))),
+            "dd" => Some(DevView::DailyDouble(mock_dd())),
+            "dd-clue" => {
+                let mut d = mock_dd();
+                d.wager = Some(1500);
+                Some(DevView::DailyDouble(d))
+            }
             "dd-result" => {
-                let mut d = DailyDoubleScreen::new(mock_clue(), 2400);
+                let mut d = mock_dd();
                 d.wager = Some(1200);
                 d.answered = Some(false);
                 Some(DevView::DailyDouble(d))
             }
-            "final" => Some(DevView::Final(FinalJeopardy::new(mock_clue(), 5200))),
+            "final" => Some(DevView::Final(mock_final())),
             "final-result" => {
-                let mut f = FinalJeopardy::new(mock_clue(), 5200);
-                f.show_category = false;
-                f.wager = Some(2000);
-                f.answered = Some(true);
+                let mut f = mock_final();
+                f.phase = FinalPhase::Result;
+                f.wagers[0] = Some(2000);
+                f.responses[0] = Some(("Prague".into(), true));
                 Some(DevView::Final(f))
             }
+            "final-teams" => Some(DevView::Final(mock_final_teams(FinalPhase::Wager))),
+            "final-teams-clue" => Some(DevView::Final(mock_final_teams(FinalPhase::Clue))),
+            "final-teams-result" => Some(DevView::Final(mock_final_teams(FinalPhase::Result))),
+            "lobby" => Some(DevView::Lobby(LobbyScreen::new("http://192.168.1.4:7777"))),
+            "standings" => Some(DevView::Standings),
             "mix" => Some(DevView::Mix(mock_mix(MixPhase::JeopardyPhase))),
             "mix-summary" => Some(DevView::Mix(mock_mix(MixPhase::Summary))),
             _ => None,
@@ -110,6 +133,19 @@ impl DevMenu {
                     s.show(ui, dt),
                     Some(MixSignal::Quit) | Some(MixSignal::Restart)
                 ),
+                DevView::Lobby(s) => matches!(s.show(ui, &mock_players()), Some(LobbyAction::Back)),
+                DevView::Standings => {
+                    let standings: Vec<kit::Standing> = [("Owls", 7200), ("Moths", 5000), ("Eels", -600)]
+                        .iter()
+                        .map(|(n, v)| kit::Standing { name: (*n).into(), score: kit::money(*v), negative: *v < 0 })
+                        .collect();
+                    let stats = [
+                        kit::Stat { value: "24/30".into(), label: "clues answered" },
+                        kit::Stat { value: "$3,000".into(), label: "biggest dd win" },
+                        kit::Stat { value: "Cheese".into(), label: "untouched category" },
+                    ];
+                    !matches!(kit::round_complete(ui, "Jeopardy!", &standings, &stats, 0.0), kit::SummaryAction::None)
+                }
             };
             if back {
                 self.view = None;
@@ -122,112 +158,58 @@ impl DevMenu {
         }
 
         // -- The gallery grid -------------------------------------------------
-        crate::screens::kit::ambient(ui.ctx());
+        kit::backdrop(ui.ctx(), None);
+        let c = kit::Canvas::new(ui.ctx());
+        let p = ui.painter().clone();
         let mut go_home = false;
+        kit::tag(&p, &c, c.p(64.0, 40.0), "DEV", kit::TagStyle::Gold, 16.0);
+        p.text(c.p(64.0, 92.0), Align2::LEFT_TOP, "SCREEN GALLERY", c.cond(800, 46.0), GOLD);
+        kit::label(&p, &c, c.p(64.0, 160.0), Align2::LEFT_CENTER, "JUMP INTO ANY SCREEN WITH MOCK DATA", MUTED);
 
-        let avail = ui.available_size();
-        ui.add_space((avail.y - 430.0).max(16.0) / 2.0);
-        ui.vertical_centered(|ui| {
-            ui.label(
-                RichText::new("DEV · SCREEN GALLERY")
-                    .font(theme::mono(13.0))
-                    .color(GOLD),
-            );
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("jump into any screen with mock data")
-                    .font(theme::mono(11.0))
-                    .color(INK_DIM),
-            );
-            ui.add_space(24.0);
-
-            let buttons: &[(&str, fn() -> DevView)] = &[
-                ("Trivia · question", || DevView::Trivia(mock_trivia())),
-                ("Trivia · summary", || DevView::Trivia(mock_trivia_summary())),
-                ("Trivia · loading", || DevView::Trivia(TriviaScreen::loading())),
-                ("Quizbowl · reading", || DevView::Quizbowl(mock_qb(QbPhase::Reading))),
-                ("Quizbowl · buzzed", || DevView::Quizbowl(mock_qb(QbPhase::Buzzed))),
-                ("Quizbowl · correct", || DevView::Quizbowl(mock_qb(QbPhase::Correct))),
-                ("Quizbowl · incorrect", || DevView::Quizbowl(mock_qb(QbPhase::Incorrect))),
-                ("Quizbowl · timeout", || DevView::Quizbowl(mock_qb(QbPhase::Timeout))),
-                ("Quizbowl · loading", || DevView::Quizbowl(TossupScreen::loading(0, 0))),
-                ("Quizbowl · bonus", || DevView::Bonus(BonusScreen::new(mock_bonus(), 55, 3))),
-                ("Jeopardy · setup", || DevView::Setup(JeopardySetupScreen::default())),
-                ("Jeopardy · board", || DevView::Board(mock_board())),
-                ("Jeopardy · clue", || DevView::Clue(ClueScreen::new(mock_clue()))),
-                ("Jeopardy · daily double", || DevView::DailyDouble(DailyDoubleScreen::new(mock_clue(), 2400))),
-                ("Jeopardy · final", || DevView::Final(FinalJeopardy::new(mock_clue(), 5200))),
-                ("Mix · jeopardy phase", || DevView::Mix(mock_mix(MixPhase::JeopardyPhase))),
-                ("Mix · summary", || DevView::Mix(mock_mix(MixPhase::Summary))),
-            ];
-
-            // 3-column grid of pill buttons
-            let cols = 3;
-            let bw = 230.0;
-            let bh = 46.0;
-            let gap = 14.0;
-            let row_w = cols as f32 * bw + (cols as f32 - 1.0) * gap;
-
-            for chunk in buttons.chunks(cols) {
-                ui.horizontal(|ui| {
-                    ui.add_space((avail.x - row_w) / 2.0);
-                    for (i, (label, make)) in chunk.iter().enumerate() {
-                        if i > 0 {
-                            ui.add_space(gap);
-                        }
-                        if pill(ui, label, Vec2::new(bw, bh)) {
-                            self.view = Some(make());
-                        }
-                    }
-                });
-                ui.add_space(gap);
+        let buttons: &[(&str, fn() -> DevView)] = &[
+            ("TRIVIA · QUESTION", || DevView::Trivia(mock_trivia())),
+            ("TRIVIA · SUMMARY", || DevView::Trivia(mock_trivia_summary())),
+            ("TRIVIA · LOADING", || DevView::Trivia(TriviaScreen::loading())),
+            ("QUIZBOWL · READING", || DevView::Quizbowl(mock_qb(QbPhase::Reading))),
+            ("QUIZBOWL · BUZZED", || DevView::Quizbowl(mock_qb(QbPhase::Buzzed))),
+            ("QUIZBOWL · CORRECT", || DevView::Quizbowl(mock_qb(QbPhase::Correct))),
+            ("QUIZBOWL · INCORRECT", || DevView::Quizbowl(mock_qb(QbPhase::Incorrect))),
+            ("QUIZBOWL · TIMEOUT", || DevView::Quizbowl(mock_qb(QbPhase::Timeout))),
+            ("QUIZBOWL · LOADING", || DevView::Quizbowl(TossupScreen::loading(0, 0))),
+            ("QUIZBOWL · BONUS", || DevView::Bonus(BonusScreen::new(mock_bonus(), 55, 3))),
+            ("JEOPARDY · SETUP", || DevView::Setup(JeopardySetupScreen::default())),
+            ("JEOPARDY · BOARD", || DevView::Board(mock_board())),
+            ("JEOPARDY · CLUE", || DevView::Clue(mock_clue_screen())),
+            ("JEOPARDY · DAILY DOUBLE", || DevView::DailyDouble(mock_dd())),
+            ("JEOPARDY · FINAL", || DevView::Final(mock_final())),
+            ("JEOPARDY · FINAL (PHONES)", || DevView::Final(mock_final_teams(FinalPhase::Wager))),
+            ("MIX · JEOPARDY PHASE", || DevView::Mix(mock_mix(MixPhase::JeopardyPhase))),
+            ("MIX · SUMMARY", || DevView::Mix(mock_mix(MixPhase::Summary))),
+            ("LOBBY", || DevView::Lobby(LobbyScreen::new("http://192.168.1.4:7777"))),
+            ("ROUND COMPLETE · TEAMS", || DevView::Standings),
+        ];
+        for (i, (label, make)) in buttons.iter().enumerate() {
+            let (col, row) = (i % 4, i / 4);
+            let r = c.r(64.0 + col as f32 * 290.0, 200.0 + row as f32 * 62.0, 280.0, 52.0);
+            if kit::button(ui, &c, r, label, kit::Btn::Secondary, ("dev", i)).clicked() {
+                self.view = Some(make());
             }
-
-            ui.add_space(18.0);
-            if pill(ui, "→ real Home screen", Vec2::new(230.0, 42.0)) {
-                go_home = true;
-            }
-        });
-
+        }
+        if kit::button(ui, &c, c.r(64.0, 540.0, 260.0, 56.0), "REAL HOME SCREEN", kit::Btn::Primary, "dev_home").clicked() {
+            go_home = true;
+        }
         go_home
     }
 }
 
-// ---------------------------------------------------------------------------
-// Simple gallery button
-// ---------------------------------------------------------------------------
-
-fn pill(ui: &mut egui::Ui, label: &str, size: Vec2) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-    let t = ui.ctx().animate_bool(resp.id, resp.hovered());
-    let fill = crate::screens::kit::lerp_color(BLUE_MID, GOLD, t);
-    let border = crate::screens::kit::lerp_color(LINE, GOLD, t);
-    let text = crate::screens::kit::lerp_color(WHITE, theme::ON_ACCENT, t);
-    ui.painter().rect_filled(rect, egui::Rounding::same(12.0), fill);
-    ui.painter()
-        .rect_stroke(rect, egui::Rounding::same(12.0), egui::Stroke::new(1.0, border));
-    ui.painter()
-        .text(rect.center(), Align2::CENTER_CENTER, label, theme::plex_medium(14.0), text);
-    resp.clicked()
-}
-
+/// Small "GALLERY" chip at the top center (clear of tags and QUIT).
 fn dev_back_button(ui: &mut egui::Ui) -> bool {
-    let screen = ui.ctx().screen_rect();
-    let rect = Rect::from_min_size(Pos2::new(screen.left() + 16.0, screen.top() + 16.0), Vec2::new(110.0, 30.0));
+    let c = kit::Canvas::new(ui.ctx());
+    let rect = c.r(590.0, 4.0, 100.0, 22.0);
     let resp = ui.interact(rect, egui::Id::new("dev_back"), Sense::click());
-    let t = ui.ctx().animate_bool(resp.id, resp.hovered());
-    ui.painter().rect_stroke(
-        rect,
-        egui::Rounding::same(999.0),
-        egui::Stroke::new(1.0, crate::screens::kit::lerp_color(LINE, INK_DIM, t)),
-    );
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        "← gallery",
-        theme::plex_medium(12.0),
-        crate::screens::kit::lerp_color(INK_DIM, WHITE, t),
-    );
+    let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+    ui.painter().rect_filled(rect, 0.0, kit::lerp_color(crate::theme::PANEL, crate::theme::PANEL_HI, t));
+    kit::text_tracked(ui.painter(), rect.center(), Align2::CENTER_CENTER, "← GALLERY", c.cond(700, 11.0), MUTED, 0.14);
     resp.clicked()
 }
 
@@ -242,9 +224,9 @@ fn mock_trivia() -> TriviaScreen {
 fn mock_trivia_summary() -> TriviaScreen {
     let mut s = TriviaScreen::new(mock_questions());
     s.current_idx = s.questions.len();
-    s.score = 740;
-    s.correct_count = 7;
-    s.best_streak = 4;
+    s.score = 50;
+    s.correct_count = 2;
+    s.best_streak = 2;
     s
 }
 
@@ -260,6 +242,7 @@ fn mock_questions() -> Vec<TriviaQuestion> {
                 "Runtime Allocation Map".into(),
             ],
             difficulty: "medium".into(),
+            shuffle_seed: 1,
         },
         TriviaQuestion {
             category: "Geography".into(),
@@ -267,6 +250,7 @@ fn mock_questions() -> Vec<TriviaQuestion> {
             correct_answer: "Paris".into(),
             incorrect_answers: vec!["Vienna".into(), "Prague".into(), "Rome".into()],
             difficulty: "easy".into(),
+            shuffle_seed: 2,
         },
         TriviaQuestion {
             category: "History".into(),
@@ -274,6 +258,7 @@ fn mock_questions() -> Vec<TriviaQuestion> {
             correct_answer: "Egyptian hieroglyphs".into(),
             incorrect_answers: vec!["Cuneiform".into(), "Linear B".into(), "Runic".into()],
             difficulty: "hard".into(),
+            shuffle_seed: 3,
         },
     ]
 }
@@ -388,7 +373,63 @@ fn mock_board() -> Board {
             ((*name).to_string(), clues)
         })
         .collect();
-    Board::new(categories, false, vec![("YOU".into(), 1800)])
+    // Three teams with a few spent tiles, matching the Roster hi-fi.
+    let mut b = Board::new(
+        categories,
+        false,
+        vec![("Owls".into(), 2400), ("Moths".into(), 1800), ("Eels".into(), -400)],
+    );
+    for (c, r) in [(0, 0), (1, 1), (1, 2), (1, 3), (2, 0), (2, 1), (2, 4), (4, 0)] {
+        b.used[c][r] = true;
+    }
+    b.dd_left = 1;
+    b
+}
+
+fn mock_final() -> FinalJeopardy {
+    FinalJeopardy::new(mock_clue(), vec![("You".into(), 5200)], false)
+}
+
+/// Phone Final with three teams: Eels sit out (negative score), Owls are in.
+fn mock_final_teams(phase: FinalPhase) -> FinalJeopardy {
+    let mut f = FinalJeopardy::new(mock_clue(), mock_teams(), true);
+    f.phone_wager(0, 2000);
+    if phase != FinalPhase::Wager {
+        f.phone_wager(1, 1800);
+        f.phase = FinalPhase::Clue;
+        f.phone_answer(0, "prague");
+    }
+    if phase == FinalPhase::Result {
+        f.phone_answer(1, "Vienna");
+        f.phase = FinalPhase::Result;
+    }
+    f
+}
+
+fn mock_players() -> Vec<PlayerInfo> {
+    ["Owls", "Moths", "Eels"]
+        .iter()
+        .enumerate()
+        .map(|(i, n)| PlayerInfo { id: i as u32 + 1, name: (*n).into(), score: 0, connected: i != 2 })
+        .collect()
+}
+
+fn mock_teams() -> Vec<(String, i32)> {
+    vec![("Owls".into(), 2400), ("Moths".into(), 1800), ("Eels".into(), -400)]
+}
+
+fn mock_clue_screen() -> ClueScreen {
+    let mut c = ClueScreen::new(mock_clue());
+    c.teams = mock_teams();
+    c.active = 1;
+    c
+}
+
+fn mock_dd() -> DailyDoubleScreen {
+    let mut d = DailyDoubleScreen::new(mock_clue(), 2400);
+    d.teams = mock_teams();
+    d.wager_input = "1500".into();
+    d
 }
 
 fn mock_mix(phase: MixPhase) -> MixScreen {
