@@ -1,12 +1,14 @@
-use egui::{Align2, Pos2, Ui};
+//! Mix — a round of each mode back to back, reusing the mode screens.
+
+use egui::{Align2, Ui};
 use crate::api::jeopardy::Clue;
 use crate::api::opentdb::TriviaQuestion;
 use crate::api::qbreader::Tossup;
 use crate::screens::jeopardy::clue::{ClueAction, ClueScreen};
-use crate::screens::kit::{self, SummaryAction};
+use crate::screens::kit::{self, Canvas, SummaryAction};
 use crate::screens::quizbowl::tossup::{TossupAction, TossupScreen};
 use crate::screens::trivia::question::{TriviaAction, TriviaScreen};
-use crate::theme;
+use crate::theme::MUTED;
 
 pub const TRIVIA_COUNT: usize = 3;
 pub const QB_COUNT: u32 = 3;
@@ -61,6 +63,18 @@ impl MixScreen {
         }
     }
 
+    /// Supply the Jeopardy clues once the data has loaded, if Mix started first.
+    pub fn fill_jeopardy_clues(&mut self, clues: impl FnOnce() -> Vec<Clue>) {
+        if self.jeopardy_clues.is_empty() && self.jeopardy_idx == 0 && self.jeopardy_clue.is_none() {
+            self.jeopardy_clues = clues();
+        }
+    }
+
+    /// The Jeopardy clue on screen during the Jeopardy phase.
+    pub fn current_clue_mut(&mut self) -> Option<&mut ClueScreen> {
+        self.jeopardy_clue.as_mut()
+    }
+
     pub fn on_trivia_loaded(&mut self, result: Result<Vec<TriviaQuestion>, String>) {
         self.trivia = Some(match result {
             Ok(qs) => TriviaScreen::new(qs),
@@ -87,8 +101,7 @@ impl MixScreen {
     pub fn show(&mut self, ui: &mut Ui, dt: f32) -> Option<MixSignal> {
         match self.phase {
             MixPhase::Loading => {
-                kit::ambient(ui.ctx());
-                kit::loader(ui, "Mixing up your questions…");
+                kit::loading(ui, "MIXING IT UP", "MIX · TRIVIA, QUIZBOWL, JEOPARDY", None);
                 None
             }
 
@@ -127,8 +140,7 @@ impl MixScreen {
             }
 
             MixPhase::QuizbowlLoading => {
-                kit::ambient(ui.ctx());
-                kit::loader(ui, "Finding a tossup…");
+                kit::loading(ui, "FINDING A TOSSUP", &format!("MIX · TOSSUP {} OF {QB_COUNT}", self.quizbowl_done + 1), None);
                 None
             }
 
@@ -153,7 +165,7 @@ impl MixScreen {
                             self.phase = MixPhase::JeopardyPhase;
                             if !self.jeopardy_clues.is_empty() {
                                 let mut cs = ClueScreen::new(self.jeopardy_clues[0].clone());
-                                cs.next_label = "Next clue →";
+                                cs.next_label = "Next clue";
                                 self.jeopardy_clue = Some(cs);
                             }
                             None
@@ -170,39 +182,8 @@ impl MixScreen {
             }
 
             MixPhase::JeopardyPhase => {
-                kit::ambient(ui.ctx());
-
-                // Progress bar and score overlay at top (same geometry as trivia bar)
-                let avail_w = ui.available_width();
-                let content_w = (avail_w - 88.0).min(900.0).max(420.0);
-                let left = (avail_w - content_w) / 2.0;
-                let right = left + content_w;
-                let bar_cy = 30.0 + 15.0;
                 let total_so_far =
                     self.trivia_score_final + self.quizbowl_score_final + self.jeopardy_score;
-
-                ui.painter().text(
-                    Pos2::new(left, bar_cy),
-                    Align2::LEFT_CENTER,
-                    format!(
-                        "JEOPARDY   •   CLUE {}/{}",
-                        self.jeopardy_idx + 1,
-                        JEOPARDY_COUNT
-                    ),
-                    theme::mono(11.0),
-                    theme::GOLD,
-                );
-                kit::score_chip(
-                    ui,
-                    Pos2::new(right, bar_cy),
-                    "SCORE",
-                    &total_so_far.to_string(),
-                    0.0,
-                );
-
-                if kit::quit_button(ui) {
-                    return Some(MixSignal::Quit);
-                }
 
                 // Init clue screen if needed
                 if self.jeopardy_clue.is_none() {
@@ -210,7 +191,7 @@ impl MixScreen {
                         let mut cs = ClueScreen::new(
                             self.jeopardy_clues[self.jeopardy_idx].clone(),
                         );
-                        cs.next_label = "Next clue →";
+                        cs.next_label = "Next clue";
                         self.jeopardy_clue = Some(cs);
                     } else {
                         let now = ui.input(|i| i.time);
@@ -221,7 +202,17 @@ impl MixScreen {
                 }
 
                 if let Some(clue_screen) = self.jeopardy_clue.as_mut() {
-                    if let Some(ClueAction::Done { correct }) = clue_screen.show(ui) {
+                    clue_screen.teams = vec![("You".into(), total_so_far)];
+                    clue_screen.money_scores = false;
+                    // The clue paints the backdrop, so draw Quit after it.
+                    let resp = clue_screen.show(ui);
+                    if kit::quit_button(ui) {
+                        return Some(MixSignal::Quit);
+                    }
+                    let c = Canvas::new(ui.ctx());
+                    kit::label(ui.painter(), &c, c.p(1131.0, 47.0), Align2::RIGHT_CENTER,
+                        &format!("MIX · CLUE {} OF {JEOPARDY_COUNT}", self.jeopardy_idx + 1), MUTED);
+                    if let Some(ClueAction::Done { correct }) = resp {
                         let value = self
                             .jeopardy_clues
                             .get(self.jeopardy_idx)
@@ -256,9 +247,9 @@ impl MixScreen {
                 ];
                 match kit::summary(
                     ui,
-                    "MIX COMPLETE",
+                    "Mix",
                     &total.to_string(),
-                    "TOTAL SCORE",
+                    "",
                     &stats,
                     self.summary_start,
                 ) {

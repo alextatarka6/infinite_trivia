@@ -1,7 +1,10 @@
-use egui::{Align2, Color32, Id, Pos2, Rect, Rounding, Sense, Stroke, Vec2};
-use crate::screens::kit;
-use crate::theme::{self, BLUE_DARK, BLUE_MID, GOLD, INK_DIM, LINE, WHITE};
+//! Phone lobby — QR code + address on the left, mode / difficulty and the
+//! players on the couch on the right. Shown when TEAMS starts with nobody seated.
+
+use egui::{Align2, Key, Pos2, Stroke, Vec2};
+use crate::screens::kit::{self, Btn, Canvas, TagStyle};
 use crate::server::protocol::PlayerInfo;
+use crate::theme::{self, GOLD, INK, LINE, MUTED, PANEL};
 
 pub enum LobbyMode {
     Trivia,
@@ -23,262 +26,103 @@ pub struct LobbyScreen {
     pub level: u8,
     enter_start: f64,
     url: String,
+    /// Shown in place of the join hint when phones can't connect.
+    pub warning: Option<String>,
     qr_modules: Option<(usize, Vec<bool>)>,
 }
 
 impl LobbyScreen {
     pub fn new(url: &str) -> Self {
-        let qr_modules = qrcode::QrCode::new(url.as_bytes()).ok().map(|code| {
-            let w = code.width();
-            let mut dark = Vec::with_capacity(w * w);
-            for r in 0..w {
-                for c in 0..w {
-                    dark.push(code[(r, c)] == qrcode::Color::Dark);
-                }
-            }
-            (w, dark)
-        });
         Self {
             mode: LobbyMode::Trivia,
             level: 2,
             enter_start: -1.0,
             url: url.to_string(),
-            qr_modules,
+            warning: None,
+            qr_modules: kit::qr_modules(url),
         }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, players: &[PlayerInfo]) -> Option<LobbyAction> {
-        kit::ambient(ui.ctx());
+        kit::backdrop(ui.ctx(), None);
         let now = ui.input(|i| i.time);
         if self.enter_start < 0.0 {
             self.enter_start = now;
         }
-        let ey = kit::enter_offset(ui, self.enter_start);
-
         if kit::quit_button(ui) {
             return Some(LobbyAction::Back);
         }
-
-        let avail = ui.available_size();
-        let cx = avail.x / 2.0;
+        let c = Canvas::new(ui.ctx());
         let painter = ui.painter().clone();
 
-        let mut y = 36.0 + ey;
+        // -- Top bar ---------------------------------------------------------------
+        let tag = kit::tag(&painter, &c, c.p(64.0, 30.0), "LOBBY", TagStyle::Gold, theme::TYPE_TAG);
+        kit::label(&painter, &c, Pos2::new(tag.right() + c.v(16.0), tag.center().y), Align2::LEFT_CENTER, "PHONES ARE THE BUZZERS", MUTED);
 
-        // Header
-        painter.text(
-            Pos2::new(cx, y),
-            Align2::CENTER_CENTER,
-            "MULTIPLAYER",
-            theme::spectral_medium(15.0),
-            INK_DIM,
-        );
-        y += 34.0;
-
-        // QR code
-        let qr_size = 148.0;
-        if let Some((w, dark)) = &self.qr_modules {
-            let module_px = qr_size / *w as f32;
-            let tl = Pos2::new(cx - qr_size / 2.0 - 6.0, y);
-            let bg = Rect::from_min_size(tl, Vec2::splat(qr_size + 12.0));
-            painter.rect_filled(bg, Rounding::same(6.0), Color32::WHITE);
-            for row in 0..*w {
-                for col in 0..*w {
-                    if dark[row * w + col] {
-                        let px = tl.x + 6.0 + col as f32 * module_px;
-                        let py = tl.y + 6.0 + row as f32 * module_px;
-                        painter.rect_filled(
-                            Rect::from_min_size(Pos2::new(px, py), Vec2::splat(module_px + 0.5)),
-                            Rounding::ZERO,
-                            Color32::BLACK,
-                        );
-                    }
-                }
+        // -- Join: big QR + address ---------------------------------------------------
+        let qr = c.r(64.0, 110.0, 320.0, 320.0);
+        match &self.qr_modules {
+            Some(m) => kit::draw_qr(&painter, qr, m),
+            None => {
+                painter.rect_filled(qr, 0.0, PANEL);
+                kit::label(&painter, &c, qr.center(), Align2::CENTER_CENTER, "QR UNAVAILABLE", MUTED);
             }
-        } else {
-            // Fallback box when QR generation fails
-            let box_r = Rect::from_center_size(Pos2::new(cx, y + qr_size / 2.0), Vec2::splat(qr_size));
-            painter.rect_filled(box_r, Rounding::same(8.0), BLUE_DARK);
-            painter.rect_stroke(box_r, Rounding::same(8.0), Stroke::new(1.0, LINE));
-            painter.text(box_r.center(), Align2::CENTER_CENTER, "QR unavailable", theme::plex(12.0), INK_DIM);
         }
-        y += qr_size + 18.0;
-
-        // URL
-        painter.text(
-            Pos2::new(cx, y),
-            Align2::CENTER_CENTER,
-            &self.url,
-            theme::mono_semibold(13.0),
-            GOLD,
-        );
-        y += 26.0;
-
-        painter.text(
-            Pos2::new(cx, y),
-            Align2::CENTER_CENTER,
-            "Scan QR or type URL on your phone",
-            theme::plex(11.5),
-            INK_DIM,
-        );
-        y += 28.0;
-
-        // Divider
-        painter.line_segment(
-            [Pos2::new(cx - 80.0, y), Pos2::new(cx + 80.0, y)],
-            Stroke::new(1.0, LINE),
-        );
-        y += 16.0;
-
-        // Player list
-        let n = players.len();
-        let count_label = if n == 0 {
-            "No players yet".to_string()
-        } else {
-            format!("{} player{} connected", n, if n == 1 { "" } else { "s" })
+        kit::label(&painter, &c, c.p(64.0, 466.0), Align2::LEFT_CENTER, "JOIN ON PHONE", MUTED);
+        painter.text(c.p(64.0, 500.0), Align2::LEFT_CENTER, self.url.trim_start_matches("http://"), c.cond(800, 38.0), GOLD);
+        match &self.warning {
+            Some(w) => kit::wrapped(&painter, c.p(64.0, 528.0), w, c.barlow(600, 16.0), theme::BAD, c.v(320.0), c.v(22.0)),
+            None => kit::wrapped(&painter, c.p(64.0, 528.0), "Scan the code, or type the address on any phone on this Wi-Fi.",
+                c.barlow(500, 16.0), MUTED, c.v(320.0), c.v(22.0)),
         };
-        painter.text(
-            Pos2::new(cx, y),
-            Align2::CENTER_CENTER,
-            &count_label,
-            theme::plex_medium(12.5),
-            if n == 0 { INK_DIM } else { WHITE },
-        );
-        y += 22.0;
 
-        let chip_h = 34.0;
-        let chip_w = (avail.x * 0.55).min(240.0);
-        for (i, player) in players.iter().enumerate() {
-            let rect = Rect::from_center_size(
-                Pos2::new(cx, y + chip_h / 2.0),
-                Vec2::new(chip_w, chip_h),
-            );
-            painter.rect_filled(rect, Rounding::same(8.0), BLUE_MID);
-            painter.rect_stroke(rect, Rounding::same(8.0), Stroke::new(1.0, LINE));
-            let dot_c = Pos2::new(rect.left() + 14.0, rect.center().y);
-            painter.circle_filled(dot_c, 4.0, GOLD.gamma_multiply(0.6 + 0.4 * ((i as f32 * 0.7 + now as f32 * 0.9).sin() * 0.5 + 0.5)));
-            painter.text(
-                Pos2::new(dot_c.x + 12.0, rect.center().y),
-                Align2::LEFT_CENTER,
-                &player.name,
-                theme::plex_medium(13.0),
-                WHITE,
-            );
-            y += chip_h + 6.0;
-        }
-
-        y += 10.0;
-
-        // Divider
-        painter.line_segment(
-            [Pos2::new(cx - 80.0, y), Pos2::new(cx + 80.0, y)],
-            Stroke::new(1.0, LINE),
-        );
-        y += 16.0;
-
-        // Mode tabs
-        painter.text(
-            Pos2::new(cx, y),
-            Align2::CENTER_CENTER,
-            "GAME MODE",
-            theme::mono(9.5),
-            INK_DIM,
-        );
-        y += 16.0;
-
-        let tab_labels = ["Trivia", "Quizbowl", "Jeopardy", "Mix"];
-        let tab_w = 76.0;
-        let tab_h = 30.0;
-        let tab_gap = 5.0;
-        let tabs_total = tab_labels.len() as f32 * tab_w + (tab_labels.len() - 1) as f32 * tab_gap;
-        let tab_x0 = cx - tabs_total / 2.0;
-        let mut new_mode: Option<usize> = None;
-
-        for (i, label) in tab_labels.iter().enumerate() {
-            let rect = Rect::from_min_size(
-                Pos2::new(tab_x0 + i as f32 * (tab_w + tab_gap), y),
-                Vec2::new(tab_w, tab_h),
-            );
-            let selected = self.mode_idx() == i;
-            let resp = ui.interact(rect, Id::new(("lobby_tab", i)), Sense::click());
-            painter.rect_filled(
-                rect,
-                Rounding::same(6.0),
-                if selected { GOLD } else { BLUE_MID },
-            );
-            painter.text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                label,
-                theme::plex_medium(11.5),
-                if selected { Color32::from_rgb(18, 13, 0) } else { INK_DIM },
-            );
-            if resp.clicked() {
-                new_mode = Some(i);
-            }
-        }
-
-        if let Some(i) = new_mode {
+        // -- Mode + difficulty --------------------------------------------------------------
+        let x = 448.0;
+        kit::label(&painter, &c, c.p(x, 122.0), Align2::LEFT_CENTER, "MODE", MUTED);
+        let modes = ["TRIVIA", "QUIZBOWL", "JEOPARDY!", "MIX"];
+        if let (_, Some(i)) = kit::segmented(ui, &c, c.p(x, 136.0), &modes, self.mode_idx(), "lobby_mode") {
             self.mode = LobbyMode::from_idx(i);
         }
-        y += tab_h + 14.0;
-
-        // Difficulty dots (not for Jeopardy)
         if !matches!(self.mode, LobbyMode::Jeopardy) {
-            painter.text(
-                Pos2::new(cx, y),
-                Align2::CENTER_CENTER,
-                "DIFFICULTY",
-                theme::mono(9.5),
-                INK_DIM,
-            );
-            y += 16.0;
-
-            let dot_r = 7.0;
-            let dot_spacing = 36.0;
-            let level_names = ["Easy", "Medium", "Hard"];
-            let dots_total = 3.0 * dot_spacing;
-            let dot_x0 = cx - dots_total / 2.0 + dot_spacing / 2.0;
-
-            for n in 1u8..=3 {
-                let dc = Pos2::new(dot_x0 + (n as f32 - 1.0) * dot_spacing, y + dot_r);
-                let r = if n == self.level { dot_r + 2.0 } else { dot_r };
-                let fill = if n <= self.level { GOLD } else { BLUE_MID };
-                let hit = Rect::from_center_size(dc, Vec2::splat(r * 2.5));
-                let resp = ui.interact(hit, Id::new(("lobby_diff", n)), Sense::click());
-                painter.circle_filled(dc, r, fill);
-                if n == self.level {
-                    painter.circle_stroke(dc, r + 3.0, Stroke::new(1.0, GOLD.gamma_multiply(0.4)));
-                }
-                painter.text(
-                    Pos2::new(dc.x, dc.y + dot_r + 9.0),
-                    Align2::CENTER_CENTER,
-                    level_names[n as usize - 1],
-                    theme::mono(8.5),
-                    INK_DIM,
-                );
-                if resp.clicked() {
-                    self.level = n;
-                }
+            kit::label(&painter, &c, c.p(x + 400.0, 122.0), Align2::LEFT_CENTER, "DIFFICULTY", MUTED);
+            let levels = ["EASY", "MEDIUM", "HARD", "MIXED"];
+            if let (_, Some(i)) = kit::segmented(ui, &c, c.p(x + 400.0, 136.0), &levels, self.level.clamp(1, 4) as usize - 1, "lobby_level") {
+                self.level = i as u8 + 1;
             }
-            y += dot_r * 2.0 + 24.0;
-        } else {
-            y += 8.0;
         }
 
-        // Start / waiting
-        let can_start = n > 0;
-        if can_start {
-            let btn_rect = Rect::from_center_size(
-                Pos2::new(cx, y + 21.0),
-                Vec2::new(180.0, 42.0),
-            );
-            let mut child = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(btn_rect)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            );
-            if kit::primary_button(&mut child, "Start Game →").clicked() {
+        // -- On the couch -------------------------------------------------------------------------
+        let n = players.len();
+        let count = match n {
+            0 => "ON THE COUCH".to_string(),
+            1 => "ON THE COUCH · 1 PLAYER".to_string(),
+            n => format!("ON THE COUCH · {n} PLAYERS"),
+        };
+        let lab = kit::label(&painter, &c, c.p(x, 222.0), Align2::LEFT_CENTER, &count, MUTED);
+        painter.line_segment([Pos2::new(lab.right() + c.v(16.0), lab.center().y), Pos2::new(c.p(1216.0, 0.0).x, lab.center().y)], Stroke::new(1.0, LINE));
+        if n == 0 {
+            kit::wrapped(&painter, c.p(x, 250.0), "Nobody yet. Players join from their phones and show up here.",
+                c.barlow(500, theme::TYPE_BODY), MUTED, c.v(700.0), c.v(26.0));
+        }
+        for (i, p) in players.iter().enumerate().take(8) {
+            let (col, row) = (i % 2, i / 2);
+            let r = c.r(x + col as f32 * 390.0, 244.0 + row as f32 * 84.0, 378.0, 76.0);
+            let fade = if p.connected { 1.0 } else { 0.5 };
+            kit::poly(&painter, kit::pattern_b(r, c.v(theme::CHAMFER_LG)), PANEL.gamma_multiply(fade), Stroke::NONE);
+            let plate = egui::Rect::from_min_size(r.min + Vec2::splat(c.v(10.0)), Vec2::splat(c.v(56.0)));
+            kit::photo_plate(&painter, plate, &p.name, kit::team_photo(ui.ctx(), &p.name).as_ref(), false);
+            painter.text(Pos2::new(plate.right() + c.v(14.0), r.center().y), Align2::LEFT_CENTER, p.name.to_uppercase(), c.cond(800, 26.0), INK.gamma_multiply(fade));
+            kit::label(&painter, &c, Pos2::new(r.right() - c.v(16.0), r.center().y), Align2::RIGHT_CENTER,
+                if p.connected { "READY" } else { "AWAY" }, MUTED.gamma_multiply(fade));
+        }
+
+        // -- Start ------------------------------------------------------------------------------------
+        if n > 0 {
+            let br = c.r(x, 600.0, 200.0, 60.0);
+            kit::key_hint(&painter, &c, Pos2::new(br.right() + c.v(12.0), br.center().y), Align2::LEFT_CENTER, "ENTER ↵");
+            if kit::button(ui, &c, br, "START GAME", Btn::Primary, "lobby_start").clicked()
+                || ui.input(|i| i.key_pressed(Key::Enter))
+            {
                 return Some(match self.mode {
                     LobbyMode::Trivia => LobbyAction::StartTrivia(self.level),
                     LobbyMode::Quizbowl => LobbyAction::StartQuizbowl(self.level),
@@ -287,15 +131,8 @@ impl LobbyScreen {
                 });
             }
         } else {
-            painter.text(
-                Pos2::new(cx, y + 21.0),
-                Align2::CENTER_CENTER,
-                "Waiting for players to join…",
-                theme::plex_medium(12.5),
-                INK_DIM,
-            );
+            kit::text_tracked(&painter, c.p(x, 630.0), Align2::LEFT_CENTER, "WAITING FOR PLAYERS…", c.cond(800, 28.0), MUTED, 0.06);
         }
-
         None
     }
 

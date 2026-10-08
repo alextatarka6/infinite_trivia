@@ -2,418 +2,463 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0a1140">
 <title>Infinite Trivia</title>
 <style>
-:root {
-  --bg: #050716;
-  --panel: #0e1340;
-  --dark: #0a0f35;
-  --gold: #e8b32a;
-  --white: #f0f4ff;
-  --dim: #7a8ab0;
-  --green: #22c55e;
-  --red: #ef4444;
-  --r: 12px;
-  --r-sm: 8px;
+@font-face{font-family:'Barlow Condensed';font-weight:700;src:url(/fonts/BarlowCondensed-Bold.ttf)}
+@font-face{font-family:'Barlow Condensed';font-weight:800;src:url(/fonts/BarlowCondensed-ExtraBold.ttf)}
+@font-face{font-family:'Barlow';font-weight:500;src:url(/fonts/Barlow-Medium.ttf)}
+/* Roster tokens — keep in sync with theme/tokens.toml */
+:root{
+  --bg:#0a1140;--panel:#0d1657;--panel-hi:#13256f;
+  --gold:#f4b63f;--on-gold:#1a1304;--ink:#f7f5ee;--muted:#aab3e4;
+  --line:rgba(170,179,228,.18);--good:#5ec98a;--on-good:#0c1a10;--bad:#e8627a;--on-bad:#2a0c11;
+  --cs:6px;--cm:10px;
+  --cond:'Barlow Condensed','Arial Narrow',system-ui,sans-serif;
+  --body:'Barlow',system-ui,-apple-system,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-html,body{height:100%;background:var(--bg);color:var(--white);font-family:system-ui,-apple-system,sans-serif}
-#app{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 20px;gap:0}
-
-/* ── Typography ── */
-.wordmark{font-size:2rem;color:var(--gold);letter-spacing:.06em;font-weight:700;margin-bottom:4px}
-.sub{font-size:.75rem;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:20px}
-.tag{font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:8px}
-.status{color:var(--dim);font-size:.95rem;text-align:center;line-height:1.5}
-
-/* ── Inputs ── */
-.text-input{
-  background:var(--panel);border:1px solid rgba(255,255,255,.12);
-  color:var(--white);font-size:1.05rem;padding:14px 16px;
-  border-radius:var(--r);width:100%;transition:border-color .15s
+html,body{height:100%;background:var(--bg);color:var(--ink);font-family:var(--body);font-weight:500;overscroll-behavior:none}
+#app{
+  min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;justify-content:center;
+  padding:max(20px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right))
+          max(20px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
+  gap:14px;max-width:520px;margin:0 auto
 }
-.text-input:focus{outline:none;border-color:var(--gold)}
-.num-input{text-align:center;font-size:1.3rem;font-weight:600}
+/* Chamfer A: top-left + bottom-right. Chamfer B: bottom-right only. */
+.ch-a{clip-path:polygon(var(--c) 0,100% 0,100% calc(100% - var(--c)),calc(100% - var(--c)) 100%,0 100%,0 var(--c))}
+.ch-b{clip-path:polygon(0 0,100% 0,100% calc(100% - var(--c)),calc(100% - var(--c)) 100%,0 100%)}
 
-/* ── Buttons ── */
-.btn-primary{
-  background:var(--gold);color:#1a1200;font-size:1rem;font-weight:700;
-  padding:14px 28px;border-radius:999px;border:none;cursor:pointer;
-  width:100%;transition:transform .1s,opacity .1s
-}
-.btn-primary:active{transform:scale(.97)}
-.btn-primary:disabled{opacity:.4;cursor:default}
+/* ── Type ── */
+.wordmark{font:800 2.2rem/1 var(--cond);letter-spacing:.04em}
+.wordmark b{color:var(--gold);font-weight:800}
+.label{font:700 .78rem/1.2 var(--cond);letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+.label.gold{color:var(--gold)}
+.status{color:var(--muted);font-size:1rem;line-height:1.45}
+.big{font:700 1.65rem/1.15 var(--cond);text-transform:uppercase}
+.tag{display:inline-block;align-self:flex-start;font:800 .9rem/1 var(--cond);letter-spacing:.12em;text-transform:uppercase;
+  padding:7px 18px 7px 12px;background:var(--gold);color:var(--on-gold);
+  clip-path:polygon(0 0,100% 0,calc(100% - 10px) 100%,0 100%)}
+.tag.panel{background:var(--panel);color:var(--ink)}
+.tags{display:flex;gap:4px;flex-wrap:wrap}
 
-.btn-ghost{
-  background:transparent;color:var(--dim);font-size:.9rem;
-  padding:10px 20px;border-radius:999px;border:1px solid rgba(255,255,255,.12);
-  cursor:pointer;width:100%;transition:border-color .15s
-}
-.btn-ghost:hover{border-color:var(--gold)}
+/* ── Inputs & buttons ── */
+.field{background:var(--panel);border:2px solid var(--line);color:var(--ink);
+  font:500 1.1rem var(--body);padding:14px 14px;width:100%;border-radius:0}
+.field:focus{outline:none;border-color:var(--gold)}
+.field.num{font:800 1.8rem var(--cond);text-align:left}
+.btn{--c:var(--cm);display:flex;align-items:center;justify-content:center;gap:10px;width:100%;
+  border:none;cursor:pointer;background:var(--gold);color:var(--on-gold);
+  font:800 1.2rem/1 var(--cond);letter-spacing:.08em;text-transform:uppercase;padding:17px 20px;min-height:56px}
+.btn:active{background:#ffd884}
+.btn:disabled{background:var(--panel);color:var(--muted)}
+.chips{display:flex;gap:4px}
+.chip{flex:1;--c:var(--cs);border:none;background:var(--panel);color:var(--muted);
+  font:700 1rem/1 var(--cond);letter-spacing:.06em;padding:14px 4px;min-height:48px}
+.chip:active{background:var(--panel-hi)}
+.chip.bad{background:var(--bad);color:var(--on-bad)}
 
-.buzz-btn{
-  width:172px;height:172px;border-radius:50%;
-  background:var(--gold);color:#1a1200;
-  font-size:1.7rem;font-weight:800;letter-spacing:.04em;
-  border:none;cursor:pointer;
-  box-shadow:0 0 48px rgba(232,179,42,.35),0 0 0 4px rgba(232,179,42,.15);
-  transition:transform .1s,box-shadow .1s;
-  flex-shrink:0
-}
-.buzz-btn:active{transform:scale(.93);box-shadow:0 0 24px rgba(232,179,42,.2)}
-.buzz-btn:disabled{background:#3a3520;color:#6a5a20;box-shadow:none;cursor:default}
+.buzz{--c:16px;width:100%;flex:1;min-height:160px;max-height:300px;border:none;cursor:pointer;
+  background:var(--gold);color:var(--on-gold);font:800 4.2rem/1 var(--cond);letter-spacing:.04em;
+  touch-action:manipulation;user-select:none;-webkit-user-select:none}
+.buzz.pressed{background:#ffd884}
+.buzz:disabled{background:var(--panel);color:var(--muted);font-size:2rem}
 
-/* ── Option rows ── */
-.options{display:flex;flex-direction:column;gap:10px;width:100%}
-.opt{
-  background:var(--panel);border:1px solid rgba(255,255,255,.1);
-  color:var(--white);font-size:.95rem;padding:15px 18px;
-  border-radius:var(--r);text-align:left;cursor:pointer;
-  display:flex;align-items:center;gap:12px;
-  transition:border-color .12s,background .12s
-}
-.opt:active{transform:scale(.99)}
-.opt.correct{background:rgba(34,197,94,.12);border-color:var(--green);pointer-events:none}
-.opt.wrong{background:rgba(239,68,68,.12);border-color:var(--red);pointer-events:none}
-.opt.dim{opacity:.45;pointer-events:none}
-.opt-key{
-  display:flex;align-items:center;justify-content:center;
-  width:26px;height:26px;border-radius:6px;flex-shrink:0;
-  background:var(--dark);border:1px solid rgba(255,255,255,.15);
-  font-size:.78rem;color:var(--dim)
-}
+/* ── Options ── */
+.opts{display:flex;flex-direction:column;gap:6px}
+.opt{--c:var(--cm);display:flex;align-items:center;gap:12px;width:100%;min-height:58px;text-align:left;
+  background:var(--panel);color:var(--ink);border:none;padding:12px 14px;font:700 1.15rem/1.2 var(--cond);cursor:pointer}
+.opt:active{background:var(--panel-hi)}
+.opt .k{flex-shrink:0;width:30px;height:30px;display:flex;align-items:center;justify-content:center;
+  background:var(--panel-hi);color:var(--muted);font:800 1rem var(--cond)}
+.opt .note{margin-left:auto;font:700 .7rem var(--cond);letter-spacing:.16em;text-transform:uppercase}
+.opt.picked{box-shadow:inset 0 0 0 3px var(--gold)}
+.opt.picked .k{background:var(--gold);color:var(--on-gold)}
+.opt.correct{background:var(--good);color:var(--on-good)}
+.opt.correct .k{background:var(--on-good);color:var(--good)}
+.opt.wrong{box-shadow:inset 0 0 0 3px var(--bad)}
+.opt.wrong .k{background:var(--bad);color:var(--on-bad)}
+.opt.wrong .note{color:var(--bad)}
+.opt.dim{opacity:.45}
 
-/* ── Cards / Chips ── */
-.card{background:var(--panel);border:1px solid rgba(255,255,255,.08);border-radius:var(--r);padding:16px 20px}
-.player-row{
-  display:flex;justify-content:space-between;align-items:center;
-  background:var(--panel);border:1px solid rgba(255,255,255,.07);
-  border-radius:var(--r-sm);padding:11px 16px;font-size:.9rem
-}
-.player-row.me{border-color:var(--gold)}
-.score-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:12px}
-.chip{
-  background:var(--panel);border-radius:999px;padding:6px 14px;
-  font-size:.8rem;color:var(--dim);display:flex;gap:6px;align-items:center
-}
-.chip b{color:var(--white);font-weight:600}
+/* ── Cards / roster ── */
+.card{--c:var(--cm);background:var(--panel);padding:16px}
+.q{font:700 1.5rem/1.2 var(--cond);text-transform:uppercase}
+.reading{font:500 1.12rem/1.42 var(--body)}
+.reading::after{content:'';display:inline-block;width:3px;height:1.05em;background:var(--gold);vertical-align:-3px;margin-left:3px}
+.roster{display:flex;flex-direction:column;gap:4px}
+.row{--c:var(--cs);display:flex;align-items:center;gap:12px;background:var(--panel);padding:10px 12px}
+.row .plate{--c:5px;width:36px;height:36px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  background:var(--panel-hi);color:var(--gold);font:800 1rem var(--cond)}
+.row .name{font:700 1.15rem var(--cond);text-transform:uppercase;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .score{font:800 1.3rem var(--cond)}
+.row.me{background:var(--gold);color:var(--on-gold)}
+.row.me .plate{background:var(--on-gold)}
+.row.off{opacity:.5}
+.neg{color:var(--bad)}
+/* Compact score strip under the Jeopardy board */
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:4px}
+.strip .row{padding:6px 8px;gap:8px}
+.strip .plate{display:none}
+.strip .name{font-size:.85rem}
+.strip .score{font-size:1rem}
 
-/* ── Verdict banner ── */
-.verdict{
-  font-size:1.4rem;font-weight:700;text-align:center;
-  padding:18px 24px;border-radius:var(--r);margin-bottom:12px;width:100%
-}
-.verdict.correct{background:rgba(34,197,94,.14);color:var(--green)}
-.verdict.wrong{background:rgba(239,68,68,.14);color:var(--red)}
-.answer-text{font-size:.95rem;color:var(--dim);text-align:center}
-.answer-text span{color:var(--white);font-weight:600}
+/* ── Verdict ── */
+.verdict{--c:var(--cm);font:800 2.6rem/1 var(--cond);text-transform:uppercase;padding:22px 18px}
+.verdict.good{background:var(--good);color:var(--on-good)}
+.verdict.bad{background:var(--bad);color:var(--on-bad)}
+.verdict small{display:block;font:700 1rem var(--cond);letter-spacing:.12em;margin-top:8px}
 
-/* ── Jeopardy board ── */
-.board-wrap{width:100%;overflow-x:auto}
-.board{display:grid;gap:3px;min-width:300px}
-.b-cat{
-  background:var(--dark);border-radius:4px;
-  font-size:.6rem;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);
-  display:flex;align-items:center;justify-content:center;text-align:center;
-  padding:6px 2px;min-height:40px;line-height:1.2
-}
-.b-cell{
-  background:var(--panel);border-radius:4px;
-  display:flex;align-items:center;justify-content:center;
-  font-size:.95rem;font-weight:700;color:var(--gold);
-  min-height:44px;cursor:pointer;border:1px solid transparent;
-  transition:border-color .1s,background .1s
-}
-.b-cell:active{border-color:var(--gold);background:rgba(232,179,42,.08)}
-.b-cell.used{color:var(--dim);background:rgba(14,19,64,.4);cursor:default;pointer-events:none}
-.b-cell.no-pick{cursor:default}
+/* ── Jeopardy board: always fits the screen width ── */
+.board{display:grid;grid-template-columns:repeat(var(--cols),minmax(0,1fr));gap:3px}
+.b-cat{background:var(--panel);border-bottom:2px solid var(--gold);color:var(--ink);
+  font:700 clamp(.5rem,2.3vw,.72rem)/1.1 var(--cond);text-transform:uppercase;text-align:center;
+  padding:5px 2px;min-height:44px;display:flex;align-items:center;justify-content:center;
+  overflow-wrap:anywhere}
+.b-cell{--c:5px;border:none;background:var(--panel-hi);color:var(--gold);
+  font:800 clamp(.8rem,4.2vw,1.2rem)/1 var(--cond);min-height:48px;padding:0;cursor:pointer}
+.b-cell.used{background:transparent;box-shadow:inset 0 0 0 1px var(--line);color:transparent;pointer-events:none}
+.b-cell:disabled:not(.used){cursor:default}
+.b-cell:not(:disabled):active{background:var(--gold);color:var(--on-gold)}
 
-/* ── Loader dots ── */
-.dots{display:flex;gap:8px;justify-content:center;margin:16px 0}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--gold);animation:dp 1.2s ease-in-out infinite}
-.dot:nth-child(2){animation-delay:.18s}
-.dot:nth-child(3){animation-delay:.36s}
-@keyframes dp{0%,80%,100%{transform:scale(.55);opacity:.35}40%{transform:scale(1);opacity:1}}
+/* ── Misc ── */
+.offline{position:fixed;left:0;right:0;top:0;padding:calc(8px + env(safe-area-inset-top)) 16px 8px;
+  background:var(--bad);color:var(--on-bad);font:700 .85rem var(--cond);letter-spacing:.14em;text-align:center;z-index:9}
+.bar{display:flex;gap:3px;height:8px}
+.bar i{flex:1;background:var(--panel-hi);transform:skewX(-20deg);animation:fill 1.2s steps(1) infinite}
+.bar i:nth-child(2){animation-delay:.2s}.bar i:nth-child(3){animation-delay:.4s}
+.bar i:nth-child(4){animation-delay:.6s}.bar i:nth-child(5){animation-delay:.8s}
+@keyframes fill{0%,50%{background:var(--gold)}51%,100%{background:var(--panel-hi)}}
+.spacer{flex:1}
 
-/* ── Form wrapper ── */
-.form{width:100%;max-width:400px;display:flex;flex-direction:column;gap:12px}
-.clue-text{font-size:1.15rem;line-height:1.55;text-align:center;max-width:400px;margin-bottom:8px}
-.cat-line{display:flex;gap:10px;align-items:center;margin-bottom:10px}
-.cat-name{font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--gold)}
-.cat-val{font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
-.question-text{font-size:1.2rem;line-height:1.5;text-align:center;max-width:420px;margin-bottom:4px}
+/* Landscape phones: short screens, so tighten and go side-by-side where it helps. */
+@media (orientation:landscape) and (max-height:520px){
+  #app{max-width:none;justify-content:flex-start;gap:10px;padding-top:max(12px,env(safe-area-inset-top));padding-bottom:max(12px,env(safe-area-inset-bottom))}
+  .split{display:grid;grid-template-columns:1fr minmax(180px,34%);gap:12px;align-items:stretch;flex:1}
+  .buzz{min-height:0;max-height:none;height:100%}
+  .opts{display:grid;grid-template-columns:1fr 1fr}
+  .q{font-size:1.25rem}
+  .b-cat{min-height:30px}.b-cell{min-height:44px}
+  .board{gap:2px}
+  .strip{display:none}
+}
 </style>
 </head>
 <body>
 <div id="app"></div>
 <script>
 "use strict";
-let ws = null, myId = null;
-let S = {phase:'connecting'};
-
-function connect(){
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}/ws`);
-  ws.onclose = () => { S={phase:'connecting'}; render(); setTimeout(connect,2000); };
-  ws.onerror = () => {};
-  ws.onmessage = e => { try{ handle(JSON.parse(e.data)); }catch(_){} };
+// ── Connection ───────────────────────────────────────────────────────────────
+// The token survives reloads and screen locks; the server maps it back to our seat.
+let token = null;
+try { token = localStorage.getItem('it_token'); } catch (_) {}
+if (!token) {
+  token = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  try { localStorage.setItem('it_token', token); } catch (_) {}
 }
 
-function send(m){ if(ws && ws.readyState===1) ws.send(JSON.stringify(m)); }
+let ws = null, me = null, players = [], online = false;
+let S = { phase: 'connecting' };
+let lastKey = null;
 
-function handle(m){
-  switch(m.type){
+let retry = null;
+// One live socket at a time: a stale socket's close never spawns a second one.
+function connect() {
+  clearTimeout(retry); retry = null;
+  if (ws && ws.readyState <= 1) return;   // already connecting or open
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const sock = new WebSocket(`${proto}//${location.host}/ws`);
+  ws = sock;
+  sock.onopen = () => { online = true; send({ type: 'hello', token }); drawBanner(); };
+  sock.onclose = () => {
+    if (ws !== sock) return;
+    online = false; drawBanner();
+    if (!retry) retry = setTimeout(connect, 1500);
+  };
+  sock.onerror = () => {};
+  sock.onmessage = e => { try { handle(JSON.parse(e.data)); } catch (err) { console.error(err); } };
+}
+// Phones drop sockets while locked; reconnect immediately when we come back.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') connect();
+});
+
+function send(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
+
+// ── Messages → state ─────────────────────────────────────────────────────────
+function handle(m) {
+  switch (m.type) {
+    case 'need_name': S = { phase: 'join' }; break;
+    case 'joined':
+      me = { id: m.you, name: m.name };
+      if (['connecting', 'join'].includes(S.phase)) S = { phase: 'lobby' };
+      break;
     case 'lobby':
-      if(!myId && m.you) myId = m.you;
-      S = myId ? {phase:'lobby', players:m.players} : {phase:'join'};
+      players = m.players;
+      if (S.phase !== 'lobby') { patch(); return; }   // roster updates never interrupt a game
       break;
     case 'trivia_question':
-      S = {phase:'tq', text:m.text, options:m.options, selected:null};
-      break;
+      S = { phase: 'tq', text: m.text, options: m.options, picked: null }; break;
     case 'trivia_reveal':
-      S = {...S, phase:'tr', correctIdx:m.correct_idx, scorer:m.scorer, delta:m.delta};
-      break;
+      S = { ...S, phase: 'tr', correctIdx: m.correct_idx, scorers: m.scorers, delta: m.delta }; break;
     case 'qb_reading':
-      S = {phase:'qbr', text:m.text, canBuzz:m.can_buzz};
+      // Keep the local "buzzed" flag so a stale update can't re-enable the button.
+      S = S.phase === 'qbr' ? { ...S, text: m.text, canBuzz: m.can_buzz && !S.buzzed }
+                            : { phase: 'qbr', text: m.text, canBuzz: m.can_buzz, buzzed: false };
       break;
     case 'qb_buzzed':
-      S = {phase: m.is_you ? 'qba' : 'qbw', playerName:m.player_name};
-      break;
+      S = { phase: m.is_you ? 'qba' : 'qbw', who: m.player_name }; break;
     case 'qb_result':
-      S = {phase:'qbres', correct:m.correct, answer:m.answer, scorer:m.scorer, delta:m.delta};
-      break;
+      S = { phase: 'qbres', correct: m.correct, answer: m.answer, scorer: m.scorer, delta: m.delta }; break;
     case 'jeopardy_board':
-      S = {phase:'jb', cats:m.categories, values:m.values, used:m.used,
-           scores:m.scores, isYourTurn:m.is_your_turn, active:m.active_player};
-      break;
+      S = { phase: 'jb', cats: m.categories, values: m.values, used: m.used,
+            scores: m.scores, mine: m.is_your_turn, active: m.active_player }; break;
     case 'jeopardy_clue':
-      S = {phase:'jc', cat:m.category, value:m.value, text:m.text, isYou:m.is_you_answer, buzzed:false};
-      break;
+      S = { phase: 'jc', cat: m.category, value: m.value, text: m.text, mine: m.is_you_answer,
+            active: m.active_player, sent: false }; break;
     case 'jeopardy_dd':
-      S = {phase:'jdd', cat:m.category, value:m.value, max:m.max_wager,
-           isYou:m.is_you_answer, active:m.active_player};
-      break;
+      S = { phase: 'jdd', cat: m.category, max: m.max_wager, mine: m.is_you_answer, active: m.active_player }; break;
+    case 'jeopardy_final_wager':
+      S = { phase: 'jdd', final: true, cat: m.category, max: m.max_wager, mine: m.can_play }; break;
+    case 'jeopardy_final_clue':
+      S = { phase: 'jc', final: true, cat: m.category, text: m.text, mine: m.can_answer, sent: false }; break;
     case 'jeopardy_result':
-      S = {phase:'jres', correct:m.correct, answer:m.answer, delta:m.delta};
-      break;
+      S = { phase: 'jres', correct: m.correct, answer: m.answer, delta: m.delta }; break;
     case 'waiting':
-      S = {phase:'wait', msg:m.msg};
-      break;
-    case 'scores':
-      if(S.scores !== undefined) S.scores = m.scores;
-      break;
+      S = { phase: 'wait', msg: m.msg }; break;
   }
   render();
 }
 
-function view(){
-  switch(S.phase){
-    case 'connecting': return `
-      <div class="wordmark">TRIVIA</div>
-      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
-      <p class="status">Connecting…</p>`;
-
-    case 'join': return `
-      <div class="wordmark">TRIVIA</div>
-      <div class="sub">Infinite</div>
-      <div class="form">
-        <p class="tag">Enter your name</p>
-        <input id="name-in" class="text-input" type="text" placeholder="Your name" maxlength="20" autocomplete="off">
-        <button class="btn-primary" id="join-btn">Join Game →</button>
-      </div>`;
-
-    case 'lobby': return `
-      <div class="wordmark">LOBBY</div>
-      <p class="status" style="margin-bottom:16px">Waiting for host to start…</p>
-      <div class="form">
-        ${(S.players||[]).map(p=>`
-          <div class="player-row${p.id===myId?' me':''}">
-            <span>${esc(p.name)}${p.id===myId?' <span style="color:var(--gold);font-size:.75rem">YOU</span>':''}</span>
-            <span style="color:var(--gold);font-weight:600">${p.score}</span>
-          </div>`).join('')}
-        ${(S.players||[]).length===0?'<p class="status">Be the first to join!</p>':''}
-      </div>`;
-
-    case 'tq': return `
-      <p class="question-text">${esc(S.text)}</p>
-      <div class="options">
-        ${S.options.map((o,i)=>{
-          let cls = S.selected!==null ? (i===S.selected?'wrong':'dim') : '';
-          return `<button class="opt ${cls}" data-i="${i}" ${S.selected!==null?'disabled':''}>
-            <span class="opt-key">${String.fromCharCode(65+i)}</span>${esc(o)}</button>`;
-        }).join('')}
-      </div>`;
-
-    case 'tr': return `
-      <p class="question-text" style="margin-bottom:16px">${esc(S.text||'')}</p>
-      <div class="options">
-        ${(S.options||[]).map((o,i)=>{
-          let cls = i===S.correctIdx ? 'correct' : 'dim';
-          return `<button class="opt ${cls}">
-            <span class="opt-key">${String.fromCharCode(65+i)}</span>${esc(o)}</button>`;
-        }).join('')}
-      </div>
-      <div style="margin-top:14px;text-align:center">
-        ${S.scorer
-          ? `<p style="color:var(--green);font-weight:700">✓ ${esc(S.scorer)} +${S.delta}</p>`
-          : `<p class="status">No one answered in time</p>`}
-      </div>`;
-
-    case 'qbr': return `
-      <p class="tag">Quizbowl</p>
-      <div class="card" style="max-width:420px;width:100%;margin-bottom:24px">
-        <p style="font-size:1rem;line-height:1.6">${esc(S.text)}…</p>
-      </div>
-      ${S.canBuzz
-        ? `<button class="buzz-btn" id="buzz-btn">BUZZ</button>`
-        : `<button class="buzz-btn" disabled>BUZZ</button>`}`;
-
-    case 'qba': return `
-      <p class="tag">You buzzed! Answer quickly:</p>
-      <div class="form">
-        <input id="ans-in" class="text-input" type="text" placeholder="Your answer…" autocomplete="off" autofocus>
-        <button class="btn-primary" id="sub-ans">Submit →</button>
-      </div>`;
-
-    case 'qbw': return `
-      <p class="status">${esc(S.playerName)} buzzed in…</p>
-      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
-
-    case 'qbres': return `
-      <div class="verdict ${S.correct?'correct':'wrong'}">${S.correct?'✓ Correct!':'✗ Wrong'}</div>
-      <p class="answer-text">Correct answer: <span>${esc(S.answer)}</span></p>
-      ${S.scorer?`<p style="margin-top:10px;text-align:center;color:var(--green)">${esc(S.scorer)} +${S.delta}</p>`:''}`;
-
-    case 'jb': {
-      const {cats,values,used,scores,isYourTurn,active} = S;
-      const nC = (cats||[]).length, nR = (values&&values[0])?values[0].length:0;
-      const colW = nC ? `repeat(${nC},1fr)` : '1fr';
-      return `
-        <p class="tag" style="margin-bottom:6px">${isYourTurn?'🎯 Your turn — pick a clue!':esc(active)+"'s turn"}</p>
-        <div class="board-wrap">
-          <div class="board" style="grid-template-columns:${colW}">
-            ${(cats||[]).map(c=>`<div class="b-cat">${esc(c)}</div>`).join('')}
-            ${Array.from({length:nR},(_,r)=>
-              Array.from({length:nC},(_,c)=>{
-                const u = used&&used[c]&&used[c][r];
-                const v = values&&values[c]&&values[c][r]?'$'+values[c][r]:'';
-                const noClick = u||!isYourTurn;
-                return `<div class="b-cell${u?' used':''}${noClick?' no-pick':''}" data-c="${c}" data-r="${r}">${u?'':v}</div>`;
-              }).join('')
-            ).join('')}
-          </div>
-        </div>
-        ${scores&&scores.length?`
-          <div class="score-row">
-            ${scores.map(([n,s])=>`<div class="chip"><span>${esc(n)}</span><b>${s>=0?s:'-$'+Math.abs(s)}</b></div>`).join('')}
-          </div>`:''}`;
-    }
-
-    case 'jc': return `
-      <div class="cat-line"><span class="cat-name">${esc(S.cat)}</span><span class="cat-val">$${S.value}</span></div>
-      <p class="clue-text">${esc(S.text)}</p>
-      ${S.isYou && !S.buzzed ? `
-        <div class="form">
-          <p class="tag">What is…</p>
-          <input id="ans-in" class="text-input" type="text" placeholder="Your answer…" autocomplete="off">
-          <button class="btn-primary" id="sub-ans">Submit →</button>
-        </div>` :
-      S.buzzed ? `<p class="status">Waiting for result…</p><div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>` :
-      `<button class="buzz-btn" id="buzz-btn">BUZZ</button>`}`;
-
-    case 'jdd': return `
-      <p class="tag" style="color:var(--gold);font-size:.9rem;margin-bottom:12px">✦ DAILY DOUBLE</p>
-      <div class="cat-line"><span class="cat-name">${esc(S.cat)}</span></div>
-      ${S.isYou ? `
-        <div class="form">
-          <p class="tag">Your wager (max $${S.max})</p>
-          <input id="wager-in" class="text-input num-input" type="number" min="5" max="${S.max}" placeholder="${S.max}">
-          <button class="btn-primary" id="wager-btn">Wager →</button>
-        </div>` :
-      `<p class="status">${esc(S.active)} is wagering…</p><div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`}`;
-
-    case 'jres': return `
-      <div class="verdict ${S.correct?'correct':'wrong'}">${S.correct?'✓ Correct!':'✗ Wrong'}</div>
-      <p class="answer-text">Correct answer: <span>${esc(S.answer)}</span></p>
-      ${S.delta!==0?`<p style="margin-top:10px;text-align:center;font-weight:700;color:${S.delta>0?'var(--green)':'var(--red)'}">${S.delta>0?'+$':'−$'}${Math.abs(S.delta)}</p>`:''}`;
-
-    case 'wait': return `
-      <p class="status">${esc(S.msg||'Waiting…')}</p>
-      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
-
-    default: return `<div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+// ── Views ────────────────────────────────────────────────────────────────────
+// `key` decides when the DOM is rebuilt. Anything that changes while the player
+// may be touching or typing (tossup text, roster) is patched in place instead,
+// so buttons aren't replaced mid-tap and inputs keep their text and focus.
+function keyFor(s) {
+  switch (s.phase) {
+    case 'qbr': return 'qbr:' + s.canBuzz;
+    case 'tq': return 'tq:' + s.text + ':' + s.picked;
+    case 'lobby': return 'lobby';
+    default: return null;   // always rebuild
   }
 }
 
-function render(){
+const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const money = n => (n < 0 ? '−$' : '$') + Math.abs(n).toLocaleString('en-US');
+const mono = n => String(n || '?').trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+const LOADER = '<div class="bar"><i></i><i></i><i></i><i></i><i></i></div>';
+
+function rosterHtml() {
+  if (!players.length) return '<p class="status">Nobody here yet. You could be first.</p>';
+  return players.map(p => `
+    <div class="row ch-b${me && p.id === me.id ? ' me' : ''}${p.connected ? '' : ' off'}">
+      <span class="plate ch-a">${esc(mono(p.name))}</span>
+      <span class="name">${esc(p.name)}${p.connected ? '' : ' · away'}</span>
+      <span class="score">${p.score}</span>
+    </div>`).join('');
+}
+
+function view() {
+  switch (S.phase) {
+    case 'connecting': return `
+      <div class="wordmark">INFINITE <b>TRIVIA</b></div>
+      ${LOADER}<p class="label">Connecting to the game</p>`;
+
+    case 'join': return `
+      <div class="wordmark">INFINITE <b>TRIVIA</b></div>
+      <p class="label">Your name or team</p>
+      <input id="name" class="field" type="text" maxlength="20" autocomplete="off" autocapitalize="words" enterkeyhint="go" placeholder="e.g. Owls">
+      <button class="btn ch-a" id="join">Join game →</button>`;
+
+    case 'lobby': return `
+      <span class="tag">You're in</span>
+      <div class="big">${esc(me ? me.name : '')}</div>
+      <p class="status">The host starts the game from the TV.</p>
+      <p class="label" style="margin-top:8px">On the couch</p>
+      <div class="roster" id="roster">${rosterHtml()}</div>`;
+
+    case 'tq': case 'tr': {
+      const rev = S.phase === 'tr';
+      return `
+        <span class="tag panel">Trivia</span>
+        <p class="q">${esc(S.text)}</p>
+        <div class="opts">${S.options.map((o, i) => {
+          let cls = '', note = '';
+          if (rev) {
+            if (i === S.correctIdx) { cls = 'correct'; note = 'Correct'; }
+            else if (i === S.picked) { cls = 'wrong'; note = 'Your pick'; }
+            else cls = 'dim';
+          } else if (S.picked !== null) cls = i === S.picked ? 'picked' : 'dim';
+          return `<button class="opt ch-a ${cls}" data-i="${i}" ${S.picked !== null || rev ? 'disabled' : ''}>
+            <span class="k">${'ABCD'[i] || i + 1}</span><span>${esc(o)}</span>${note ? `<span class="note">${note}</span>` : ''}</button>`;
+        }).join('')}</div>
+        ${rev ? `<p class="label ${S.delta > 0 ? 'gold' : ''}">${
+            S.delta > 0 ? `+${S.delta} · ${esc(S.scorers.join(', '))}`
+            : S.scorers && S.scorers.length ? `Got it: ${esc(S.scorers.join(', '))}` : 'Nobody got it'}</p>`
+          : S.picked !== null ? `<p class="label">Locked in · waiting for the others</p>` : ''}`;
+    }
+
+    case 'qbr': return `
+      <div class="split">
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <span class="tag">Tossup</span>
+          <p class="reading" id="qb-text">${esc(S.text)}</p>
+        </div>
+        <button class="buzz ch-a" id="buzz" ${S.canBuzz ? '' : 'disabled'}>${S.canBuzz ? 'BUZZ' : 'LOCKED'}</button>
+      </div>`;
+
+    case 'qba': return `
+      <span class="tag">You buzzed</span>
+      <p class="big">Answer now</p>
+      <input id="ans" class="field" type="text" autocomplete="off" autocorrect="off" enterkeyhint="send" placeholder="Your answer">
+      <button class="btn ch-a" id="submit">Submit →</button>`;
+
+    case 'qbw': return `
+      <span class="tag panel">Tossup</span>
+      <p class="big">${esc(S.who)} buzzed</p>${LOADER}`;
+
+    case 'qbres': case 'jres': {
+      const good = S.correct;
+      const pts = S.phase === 'qbres'
+        ? (S.scorer ? `${esc(S.scorer)} +${S.delta}` : (S.delta ? `${S.delta > 0 ? '+' : ''}${S.delta}` : ''))
+        : (S.delta ? (S.delta > 0 ? '+' : '') + money(S.delta) : '');
+      return `
+        <div class="verdict ch-a ${good ? 'good' : 'bad'}">${good ? 'Correct' : 'Wrong'}${pts ? `<small>${pts}</small>` : ''}</div>
+        <p class="label">Answer</p><p class="big">${esc(S.answer)}</p>`;
+    }
+
+    case 'jb': {
+      const nC = S.cats.length, nR = S.values[0] ? S.values[0].length : 0;
+      let cells = S.cats.map(c => `<div class="b-cat">${esc(c)}</div>`).join('');
+      for (let r = 0; r < nR; r++) for (let c = 0; c < nC; c++) {
+        const used = S.used[c] && S.used[c][r];
+        cells += `<button class="b-cell ch-a${used ? ' used' : ''}" data-c="${c}" data-r="${r}" ${used || !S.mine ? 'disabled' : ''}>${used ? '' : '$' + S.values[c][r]}</button>`;
+      }
+      return `
+        <span class="tag ${S.mine ? '' : 'panel'}">${S.mine ? 'Your pick' : esc(S.active) + ' is picking'}</span>
+        <div class="board" style="--cols:${nC}">${cells}</div>
+        <div class="roster strip">${S.scores.map(([n, s]) => `
+          <div class="row ch-b${n === S.active ? ' me' : ''}"><span class="plate ch-a">${esc(mono(n))}</span>
+          <span class="name">${esc(n)}</span><span class="score${s < 0 && n !== S.active ? ' neg' : ''}">${money(s)}</span></div>`).join('')}</div>`;
+    }
+
+    case 'jc': return `
+      <div class="tags"><span class="tag panel">${esc(S.cat)}</span><span class="tag">${S.final ? 'Final Jeopardy' : money(S.value)}</span></div>
+      <p class="q">${esc(S.text)}</p>
+      ${S.mine && !S.sent ? `
+        <input id="ans" class="field" type="text" autocomplete="off" autocorrect="off" enterkeyhint="send" placeholder="What is…">
+        <button class="btn ch-a" id="submit">Submit →</button>`
+      : S.sent ? `<p class="label">Answer sent</p>${LOADER}`
+      : S.final ? `<p class="label">You sit this one out</p>${LOADER}`
+      : `<p class="label">${esc(S.active)} is answering</p>${LOADER}`}`;
+
+    case 'jdd': return `
+      <span class="tag">${S.final ? 'Final Jeopardy' : 'Daily Double'}</span>
+      <p class="big">${esc(S.cat)}</p>
+      ${S.mine ? `
+        <p class="label">Your ${S.final ? 'secret ' : ''}wager · up to ${money(S.max)}</p>
+        <input id="wager" class="field num" type="number" inputmode="numeric" min="${S.final ? 0 : 5}" max="${S.max}" placeholder="$${S.max}">
+        <div class="chips">
+          <button class="chip ch-a" data-w="500">$500</button>
+          <button class="chip ch-a" data-w="1000">$1,000</button>
+          <button class="chip ch-a" data-w="${Math.floor(S.max / 2)}">Half</button>
+          <button class="chip ch-a bad" data-w="${S.max}">All in</button>
+        </div>
+        <button class="btn ch-a" id="lock">Lock it</button>`
+      : S.final ? `<p class="label">Only teams above $0 play Final. You sit this one out.</p>${LOADER}`
+      : `<p class="label">${esc(S.active)} is wagering</p>${LOADER}`}`;
+
+    case 'wait': return `<p class="big">${esc(S.msg || 'Waiting…')}</p>${LOADER}`;
+    default: return LOADER;
+  }
+}
+
+// ── Render / patch ───────────────────────────────────────────────────────────
+function render() {
+  const key = keyFor(S);
+  if (key !== null && key === lastKey) { patch(); return; }
+  lastKey = key;
   document.getElementById('app').innerHTML = view();
   attach();
 }
 
-function attach(){
-  const joinBtn = document.getElementById('join-btn');
-  if(joinBtn){
-    const inp = document.getElementById('name-in');
-    if(inp){ inp.addEventListener('keydown', e=>{ if(e.key==='Enter') doJoin(); }); setTimeout(()=>inp.focus(),60); }
-    joinBtn.addEventListener('click', doJoin);
-  }
-  const buzzBtn = document.getElementById('buzz-btn');
-  if(buzzBtn) buzzBtn.addEventListener('click', ()=>{
-    send({type:'buzz'});
-    if(S.phase==='jc'){ S.buzzed=true; render(); }
+function patch() {
+  const t = document.getElementById('qb-text');
+  if (t && S.phase === 'qbr') t.textContent = S.text;
+  const r = document.getElementById('roster');
+  if (r) r.innerHTML = rosterHtml();
+}
+
+function drawBanner() {
+  let b = document.getElementById('offline');
+  if (online || S.phase === 'connecting') { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement('div'); b.id = 'offline'; b.className = 'offline'; document.body.append(b); }
+  b.textContent = 'RECONNECTING…';
+}
+
+function on(id, ev, fn) { const el = document.getElementById(id); if (el) el.addEventListener(ev, fn); return el; }
+function onEnter(id, fn) { on(id, 'keydown', e => { if (e.key === 'Enter') fn(); }); }
+
+function attach() {
+  // Join
+  on('join', 'click', doJoin); onEnter('name', doJoin);
+
+  // BUZZ fires on pointerdown: the fastest possible signal, and it can't be lost
+  // if the screen updates between finger-down and finger-up.
+  on('buzz', 'pointerdown', e => {
+    e.preventDefault();
+    if (!S.canBuzz) return;
+    send({ type: 'buzz' });
+    S.canBuzz = false; S.buzzed = true;
+    if (navigator.vibrate) navigator.vibrate(30);
+    e.currentTarget.classList.add('pressed');
   });
-  document.querySelectorAll('.opt[data-i]').forEach(b=>{
-    b.addEventListener('click', ()=>{
-      if(S.selected!==null) return;
-      const i = parseInt(b.dataset.i);
-      S.selected=i; S.phase='tq'; render();
-      send({type:'answer_idx',idx:i});
-    });
+
+  // Trivia options
+  document.querySelectorAll('.opt[data-i]:not([disabled])').forEach(b => b.addEventListener('click', () => {
+    S.picked = +b.dataset.i;
+    send({ type: 'answer_idx', idx: S.picked });
+    render();
+  }));
+
+  // Typed answers (Quizbowl + Jeopardy)
+  on('submit', 'click', doAnswer); onEnter('ans', doAnswer);
+
+  // Jeopardy board
+  if (S.phase === 'jb' && S.mine) document.querySelectorAll('.b-cell:not([disabled])').forEach(c =>
+    c.addEventListener('click', () => {
+      send({ type: 'pick_clue', col: +c.dataset.c, row: +c.dataset.r });
+      S = { phase: 'wait', msg: 'Opening clue…' }; render();
+    }));
+
+  // Daily Double wager
+  document.querySelectorAll('.chip[data-w]').forEach(c => c.addEventListener('click', () => {
+    document.getElementById('wager').value = Math.min(+c.dataset.w, S.max);
+  }));
+  on('lock', 'click', () => {
+    const v = parseInt(document.getElementById('wager').value, 10);
+    const amount = Math.max(S.final ? 0 : 5, Math.min(S.max, isNaN(v) ? S.max : v));
+    send({ type: 'wager', amount });
+    S = { phase: 'wait', msg: `Wagered ${money(amount)}. Get ready…` }; render();
   });
-  const subAns = document.getElementById('sub-ans');
-  if(subAns){
-    const inp = document.getElementById('ans-in');
-    if(inp){ inp.addEventListener('keydown', e=>{ if(e.key==='Enter') doAnswer(); }); setTimeout(()=>inp.focus(),60); }
-    subAns.addEventListener('click', doAnswer);
-  }
-  const wagerBtn = document.getElementById('wager-btn');
-  if(wagerBtn){
-    wagerBtn.addEventListener('click', ()=>{
-      const inp = document.getElementById('wager-in');
-      const amt = Math.max(5, Math.min(S.max, parseInt(inp?inp.value:'0')||S.max));
-      send({type:'wager',amount:amt});
-      S.phase='wait'; render();
-    });
-  }
-  if(S.phase==='jb' && S.isYourTurn){
-    document.querySelectorAll('.b-cell:not(.used):not(.no-pick)').forEach(cell=>{
-      cell.addEventListener('click', ()=>{
-        send({type:'pick_clue',col:parseInt(cell.dataset.c),row:parseInt(cell.dataset.r)});
-        S.phase='wait'; render();
-      });
-    });
-  }
+
+  drawBanner();
 }
 
-function doJoin(){
-  const inp = document.getElementById('name-in');
-  const name = inp?inp.value.trim():'';
-  if(!name) return;
-  send({type:'join',name});
-  S={phase:'lobby',players:[]};
-  render();
+function doJoin() {
+  const name = (document.getElementById('name').value || '').trim();
+  if (!name) return;
+  send({ type: 'join', name, token });
 }
 
-function doAnswer(){
-  const inp = document.getElementById('ans-in');
-  const text = inp?inp.value.trim():'';
-  send({type:'answer_text',text});
-  S.phase='wait'; render();
-}
-
-function esc(s){
-  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function doAnswer() {
+  const inp = document.getElementById('ans');
+  const text = (inp && inp.value || '').trim();
+  if (!text) return;
+  send({ type: 'answer_text', text });
+  if (S.phase === 'jc') { S.sent = true; render(); }
+  else { S = { phase: 'wait', msg: 'Answer sent. Waiting for the verdict…' }; render(); }
 }
 
 render();

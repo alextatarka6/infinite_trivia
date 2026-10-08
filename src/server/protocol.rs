@@ -4,9 +4,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
+    /// Sent once a phone's `hello`/`join` binds it to a seat.
+    Joined {
+        you: u32,
+        name: String,
+    },
+    /// Sent in reply to `hello` when the phone has no seat yet.
+    NeedName,
     Lobby {
         players: Vec<PlayerInfo>,
-        you: u32,
     },
     // Trivia
     TriviaQuestion {
@@ -15,7 +21,8 @@ pub enum ServerMsg {
     },
     TriviaReveal {
         correct_idx: usize,
-        scorer: Option<String>,
+        scorers: Vec<String>,
+        /// This phone's points for the question (streak multiplier included).
         delta: i32,
     },
     // Quizbowl
@@ -47,6 +54,7 @@ pub enum ServerMsg {
         value: i32,
         text: String,
         is_you_answer: bool,
+        active_player: String,
     },
     JeopardyDd {
         category: String,
@@ -54,6 +62,18 @@ pub enum ServerMsg {
         max_wager: i32,
         is_you_answer: bool,
         active_player: String,
+    },
+    /// Final Jeopardy: every team with money wagers on its phone.
+    JeopardyFinalWager {
+        category: String,
+        max_wager: i32,
+        can_play: bool,
+    },
+    /// Final Jeopardy: the clue, answered on every playing phone.
+    JeopardyFinalClue {
+        category: String,
+        text: String,
+        can_answer: bool,
     },
     JeopardyResult {
         correct: bool,
@@ -63,16 +83,15 @@ pub enum ServerMsg {
     Waiting {
         msg: String,
     },
-    Scores {
-        scores: Vec<(String, i32)>,
-    },
 }
 
 /// Messages phone clients send to the host server.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
-    Join { name: String },
+    /// First message on every (re)connect; `token` is the phone's persisted seat key.
+    Hello { token: String },
+    Join { name: String, token: String },
     AnswerIdx { idx: usize },
     AnswerText { text: String },
     Buzz,
@@ -85,6 +104,7 @@ pub struct PlayerInfo {
     pub id: u32,
     pub name: String,
     pub score: i32,
+    pub connected: bool,
 }
 
 #[derive(Debug, Clone)]
